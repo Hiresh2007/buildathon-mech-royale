@@ -1,6 +1,6 @@
 # Outlast · Mech Royale
 
-Outlast is a Python bot for the Builders arena. It routes through campus using terrain, building footprints and its collision radius. It remembers recently seen equipment, captures uncontested supply drops and looks for cover when wounded. It uses each equipped weapon's trigger rules and checks the static map before engaging actors in the arena's vision memory.
+Outlast is a Python bot for the Builders arena. It routes through campus using terrain, building footprints and its collision radius. It remembers recently seen equipment, captures uncontested supply drops and looks for cover when wounded. It follows announced supply drops within their travel-time window, prioritizes nearby power-cube clusters, and allows health regeneration when wounded and alone. It uses each equipped weapon's trigger rules and checks the static map before engaging actors in the arena's vision memory.
 
 ## Run the replay check
 
@@ -22,13 +22,30 @@ python3 benchmark.py --bot /tmp/outlast-reference.py
 python3 benchmark.py
 ```
 
-| Local measurement | Original | Current |
+| Local measurement | d7bad9a | dc0488c |
 | --- | ---: | ---: |
 | Uncontested supply drops captured within 28 s | 4/32 | 28/32 |
 | Mean time behind cover, starting wounded, over 28 s | 8.15 s | 10.50 s |
 | Aim overlapping the opponent at its later recorded position | 45/103 | 53/103 |
 
 The two movement drills use seeds 1001–1032, held out from development. They run grounded walking on the official campus map. The cover drill uses one stationary observer. The aim check uses ordinary gun range and the opponent's subsequent positions in the organizers' single recorded stream. It measures the commanded direction before weapon spread and torso slew. The official scorer measures placement over 48 games against the full house squad.
+
+### Supply and power-cube collection
+
+The previous official entry at `dc0488c` scored 3.81 placement points over 48 games. The competition awards `16 - place` per game. The current policy uses the reported time until a drop lands, the mech's walk speed, the amount of capture time already earned and the proximity of automatic cube pickups.
+
+```sh
+git show dc0488c:bot.py > /tmp/outlast-placement-reference.py
+python3 reward_drill.py --bot /tmp/outlast-placement-reference.py
+python3 reward_drill.py
+```
+
+| Measurement over 64 held-out starts | dc0488c | Updated |
+| --- | ---: | ---: |
+| Power cubes collected within five seconds | 384 | 405 |
+| Announced drops captured within 42 seconds from 160–272 m away | 16 | 58 |
+
+The two drills run each controller through its normal observation entry point on the official map, with grounded walking, collisions, pickup radii and capture clocks. They use fixed seeds 62001–62064. They exclude other entrants and measure collectible outcomes. The official practice scorer measures placement against the full house squad.
 
 ## Credits
 

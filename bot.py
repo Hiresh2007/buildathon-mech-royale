@@ -170,6 +170,7 @@ class Bot:
         self.cover_until = 0
         self.listen_yaw = None
         self.listen_until = 0
+        self.last_npc_damage = -math.inf
 
     def shelter(self, obs, enemy, distance):
         """Look for nearby walkable campus cover while waiting for HP regeneration."""
@@ -250,15 +251,52 @@ class Bot:
         for drop in obs["drops"]:
             distance = xy_distance(pos, drop["pos"])
             eta = distance / me["stats"]["walk_speed"]
-            if (drop["holder"] not in (None, me["id"]) or distance > 140
-                    or drop["lands_in"] > eta + 7 or enemy_distance < 35
+            # Drops are announced globally 25 seconds before landing. The previous
+            # fixed distance cutoff discarded announcements reachable within that window.
+            if (drop["holder"] not in (None, me["id"]) or eta > max(12, drop["lands_in"] + 9)
+                    or drop["lands_in"] > eta + 9 or enemy_distance < 35
                     or xy_distance(drop["pos"], zone["center"]) >= zone["radius"] - 3):
                 continue
-            reward = 62 if me["hp"] < 0.85 * me["max_hp"] else 30
+            reward = 105 if me["hp"] < 0.85 * me["max_hp"] else 70
             hold = distance < drop["radius"] * 0.65
             choices.append((distance + max(0, drop["lands_in"] - eta) * 3 - reward,
                             drop["pos"], hold))
         return min(choices, key=lambda entry: entry[0]) if choices else None
+
+    def recovery_goal(self, obs):
+        """Collect a near-term health reward using the arena's actual capture clocks."""
+        me, zone = obs["self"], obs["zone"]
+        pos = me["pos"]
+        for drop in obs["drops"]:
+            if (drop["holder"] == me["id"] and drop["progress"] > 0
+                    and xy_distance(pos, drop["pos"]) < drop["radius"] - 0.6
+                    and (drop["capture_s"] - drop["progress"] <= 2.5 or me["hp"] < 0.75 * me["max_hp"])):
+                return drop["pos"], True
+
+        cfg = self.config["cubes"]
+        if me["cubes"] >= cfg["stat_cap"] or not obs["cubes"]:
+            return None
+        reach = cfg["pickup_radius"]
+        distance_budget = reach + me["stats"]["walk_speed"] * (1.7 if me["cubes"] == 0 or me["hp"] < 0.8 * me["max_hp"] else 0.9)
+        nearby = [(xy_distance(pos, c["pos"]), c) for c in obs["cubes"]
+                  if abs(c["pos"][2] - pos[2]) <= 4
+                  and xy_distance(c["pos"], zone["center"]) < zone["radius"] - reach]
+        nearby = [(d, c) for d, c in nearby if d <= distance_budget]
+        if not nearby:
+            return None
+        # A pickup is automatic within the horizontal ring. Several cubes from
+        # the same reward can therefore be collected in a single visit.
+        def value(entry):
+            distance, cube = entry
+            count = sum(xy_distance(cube["pos"], other["pos"]) <= reach
+                        and abs(cube["pos"][2] - other["pos"][2]) <= 2 for _, other in nearby)
+            credit = min(count, cfg["stat_cap"] - me["cubes"])
+            return max(0, distance - reach) / max(1, credit), distance, cube["id"]
+        # A mass pickup can make many items coincide. Score the nearest candidates
+        # against the full group without a quadratic pass on a busy server tick.
+        candidates = sorted(nearby, key=lambda entry: (entry[0], entry[1]["id"]))[:24]
+        _, cube = min(candidates, key=value)
+        return cube["pos"], False
 
     def engage(self, obs, action):
         me, stats = obs["self"], obs["self"]["stats"]
@@ -375,8 +413,11 @@ class Bot:
             take = min(reachable, key=lambda p: xy_distance(pos, p["pos"]), default=None)
         supply = self.loot_goal(obs, enemy_distance)
         cover = None if urgent else self.shelter(obs, enemy, enemy_distance)
+        recovery = None if urgent else self.recovery_goal(obs)
         holding = False
-        if cover is not None:
+        if recovery is not None:
+            goal, holding = recovery
+        elif cover is not None:
             goal = cover
             holding = xy_distance(pos, cover) < 4
         elif not urgent and supply and enemy_distance > 65:
@@ -407,7 +448,14 @@ class Bot:
             action["pick"] = min(range(len(choices)), key=lambda i:
                                  preference.index(choices[i]["id"]) if choices[i]["id"] in preference else len(preference))
 
-        self.engage(obs, action)
+        # Damage dealt to a crate or NPC also restarts the five-second HP timer.
+        # While alone and wounded, let passive repairs run to a usable HP level.
+        if any(event["type"] == "damaged" and event.get("weapon") == "npc" for event in obs["events"]):
+            self.last_npc_damage = t
+        repairing = (me["in_zone"] and me["hp"] < 0.82 * me["max_hp"] and not opponents
+                     and t - self.last_npc_damage > stats["regen_delay"])
+        if not repairing:
+            self.engage(obs, action)
         if "aim" not in action:
             bearing = next((e["bearing"] for e in obs["events"]
                             if e["type"] == "damaged" and e.get("bearing") is not None), None)
