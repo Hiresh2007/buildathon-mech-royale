@@ -2,6 +2,27 @@
 
 Outlast is a Python bot for the Builders arena. It routes through campus using terrain, building footprints and its collision radius. It remembers recently seen equipment, captures uncontested supply drops and looks for cover when wounded. It follows announced supply drops within their travel-time window, prioritizes nearby power-cube clusters, and allows health regeneration when wounded and alone. It uses each equipped weapon's trigger rules and checks the static map before engaging actors in the arena's vision memory.
 
+## Isolated opponents in practice
+
+The official practice field contains 15 house mechs with shared vision. The weakest pursues the entrant first and more join later. This experiment starts from the 4.17 practice build, `7128d38`. While healthy and inside the circle, the controller can hold a useful distance from one isolated rival facing away. It watches for a second nearby rival, recent incoming damage, the next circle deadline, and the late squad. Its current weapon determines the distance it holds. The navigation, supplies and upgrades follow the baseline policy.
+
+The complete controller was compared with the baseline on opening encounters from five public matches, followed by a newly broadcast Top-16 match. It drove its own avatar on the official map while opponents continued their recorded movements. The trials used the standard gun, recorded rival damage when the simulated avatar remained visible, gun reloads, the virtual torso and avatar collision geometry. The sample retained isolated away-facing openings and face-on controls from even-numbered entrant slots. Starts were spaced at least 22 seconds apart per entrant. Each window lasted up to 20 seconds or until elimination.
+
+| Public encounter windows | Baseline direct eliminations | Updated direct eliminations | Baseline / updated entrant deaths |
+| --- | ---: | ---: | ---: |
+| First five public matches, 73 windows | 18 | 22 | 2 / 2 |
+| Held-out Top-16 match, 20 windows | 5 | 7 | 0 / 0 |
+
+The organizers keep the coordinated practice trajectories private. Whole-match tests used the same seeds for both controllers and varied what a house mech does before becoming an active pursuer.
+
+| House behavior | Seeds | Mean placement, baseline → updated | Contestant eliminations | Zone eliminations | Survival seconds |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Nonpursuers follow their current routes | 12 | 2.67 → 4.75 | 2.42 → 3.67 | 0.25 → 1.08 | 143.78 → 164.30 |
+| Nonpursuers return fire when hit | 14 | 1.29 → 1.71 | 1.00 → 1.29 | 0.29 → 0.43 | 108.14 → 117.29 |
+| Most nonpursuers face a shared sighting and nearby guards can engage | 22 | 2.45 → 2.45 | 1.41 → 1.41 | 1.05 → 1.05 | 149.24 → 151.54 |
+
+NPC-attributed squad eliminations averaged zero in these three settings. Only the official practice run establishes the competition score. The synthetic decision tests run with `python3 -m unittest test_duel`.
+
 ## Run the replay check
 
 ```sh

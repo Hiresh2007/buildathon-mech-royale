@@ -172,6 +172,10 @@ class Bot:
         self.listen_until = 0
         self.last_npc_damage = -math.inf
         self.reward_sprint = False
+        self.recent_attackers = {}
+        self.duel_target = None
+        self.duel_until = -math.inf
+        self.aim_priority = None
 
     def shelter(self, obs, enemy, distance):
         """Look for nearby walkable campus cover while waiting for HP regeneration."""
@@ -299,6 +303,59 @@ class Bot:
         _, cube = min(candidates, key=value)
         return cube["pos"], False
 
+    def duel_goal(self, obs, opponents, available):
+        """Hold a usable distance from one isolated, inattentive arena avatar."""
+        me, now = obs["self"], obs["t"]
+        self.aim_priority = None
+        for event in obs["events"]:
+            source = event.get("by")
+            if event["type"] == "damaged" and source is not None:
+                self.recent_attackers[source] = now
+
+        if not available or obs["alive"] <= 5 or now >= 185 or me["hp"] <= 0.67 * me["max_hp"]:
+            return None
+
+        pos = me["pos"]
+        candidates = []
+        for rival in opponents:
+            point, actor_id = rival["pos"], rival["id"]
+            distance, aim = xy_distance(pos, point), rival.get("aim")
+            if aim is None or not 16 < distance < 150:
+                continue
+
+            direction = math.atan2(pos[1] - point[1], pos[0] - point[0])
+            rear = abs(math.remainder(direction - aim[0], math.tau)) > 1.77
+            enemy_hp = rival.get("hp", 1400)
+            finishing = enemy_hp < 0.42 * me["hp"]
+            same_duel = actor_id == self.duel_target and now < self.duel_until
+            if not rear and not (same_duel and finishing):
+                continue
+            if not finishing and (me["hp"] <= 0.83 * me["max_hp"]
+                                  or now - self.recent_attackers.get(actor_id, -99) < 2):
+                continue
+
+            others = [actor for actor in opponents if actor["id"] != actor_id]
+            if any(now - self.recent_attackers.get(actor["id"], -99) < 3.5
+                   or xy_distance(pos, actor["pos"]) < 80
+                   or xy_distance(point, actor["pos"]) < 55 for actor in others):
+                continue
+            origin = [pos[0], pos[1], pos[2] + me["stats"]["muzzle_height"]]
+            height = self.config["mech"]["height"] * (1 + self.config["cubes"]["size_per_cube"] * rival.get("cubes", 0))
+            center = [point[0], point[1], point[2] + 0.5 * height]
+            if self.arena.clear_view(origin, center):
+                cost = distance + 0.035 * enemy_hp - (18 if same_duel else 0)
+                candidates.append((cost, rival, distance))
+
+        if not candidates:
+            return None
+        _, rival, distance = min(candidates, key=lambda candidate: candidate[0])
+        self.aim_priority = self.duel_target = rival["id"]
+        self.duel_until = now + 2
+        point = rival["pos"]
+        stand_off = 32 if any(w and w["kind"] == "lightning" for w in me["weapons"]) else 56
+        goal = [point[i] + (pos[i] - point[i]) / distance * stand_off for i in (0, 1)]
+        return goal if xy_distance(goal, obs["zone"]["center"]) < obs["zone"]["radius"] - 6 else None
+
     def engage(self, obs, action):
         me, stats = obs["self"], obs["self"]["stats"]
         pos = me["pos"]
@@ -317,6 +374,8 @@ class Bot:
             center = (x, y, z + height * 0.5)
             d = math.dist(origin, center)
             cost = d + 0.06 * actor.get("hp", 0) - (18 if self.focus == actor["id"] else 0)
+            if kind == "mech" and actor["id"] == self.aim_priority:
+                cost -= 65
             options.append((kind != "mech", cost, actor, center, d))
         for _, _, actor, center, distance in sorted(options, key=lambda o: o[:2]):
             if not self.arena.clear_view(origin, center):
@@ -436,6 +495,12 @@ class Bot:
                       pos[1] + 22 * math.sin(a + turn * self.side)]
             if xy_distance(escape, zone["center"]) < zone["radius"] - 3:
                 goal = escape
+
+        duel = self.duel_goal(obs, opponents, not urgent and not holding and cover is None)
+        if duel is not None:
+            goal = duel
+            holding = xy_distance(pos, goal) < 3
+            approaching_reward = False
 
         move = [0, 0] if holding else self.steer(pos, self.waypoint(pos, goal, t), stats["height"], stats["radius"])
         if t >= self.last_check + 1.5:
