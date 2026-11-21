@@ -524,6 +524,86 @@ class Bot:
         self.heading = best[1]
         return best[2]
 
+    def avoid_visible_round(self, obs, action):
+        """Change footwork when a visible game round intersects the current movement."""
+        me = obs["self"]
+        if not me["grounded"] or action["jump"] or not obs["projectiles"]:
+            return
+        if any(d["holder"] == me["id"] and d["progress"] > 0 for d in obs["drops"]):
+            return
+        pos, vel, stats = me["pos"], me["vel"], me["stats"]
+        radius, height = stats["radius"], stats["height"]
+        # Use closest approach to bound the search before checking alternative movement.
+        threats = []
+        for shot in obs["projectiles"]:
+            if shot["kind"] != "gun":
+                continue
+            sx, sy, sz = shot["pos"]
+            vx, vy, vz = shot["vel"]
+            ux, uy = vx - vel[0], vy - vel[1]
+            speed_sq = ux * ux + uy * uy
+            if speed_sq < 1:
+                continue
+            t = ((pos[0] - sx) * ux + (pos[1] - sy) * uy) / speed_sq
+            if not 0.08 < t < 0.58:
+                continue
+            dx = sx - pos[0] + ux * t
+            dy = sy - pos[1] + uy * t
+            z = sz + vz * t - pos[2]
+            if -0.4 < z < height + 0.4 and math.hypot(dx, dy) < radius + 5:
+                speed = math.hypot(vx, vy)
+                if speed > 1:
+                    threats.append((t, vx / speed, vy / speed, sx, sy))
+        if not threats:
+            return
+        threats.sort()
+        threats = threats[:4]
+        walk_speed = stats["walk_speed"]
+        boost_speed = stats["boost_speed"]
+        if any(w and w["kind"] == "laser" and w.get("charge", 0) > 0 for w in me["weapons"]):
+            walk_speed *= stats["charge_move_mult"]
+            boost_speed *= stats["charge_move_mult"]
+        sprint = me["energy"] >= 35
+        speed = boost_speed if sprint else walk_speed
+        accel = stats["ground_accel"]
+
+        def displacement(current, desired, duration):
+            difference = desired - current
+            changing = min(duration, abs(difference) / accel)
+            return (current * changing + math.copysign(0.5 * accel * changing * changing, difference)
+                    + desired * (duration - changing))
+
+        def clearance(move, pace):
+            margin = math.inf
+            for duration, unit_x, unit_y, start_x, start_y in threats:
+                x = pos[0] + displacement(vel[0], move[0] * pace, duration)
+                y = pos[1] + displacement(vel[1], move[1] * pace, duration)
+                margin = min(margin, abs((x - start_x) * unit_y - (y - start_y) * unit_x))
+            return margin
+
+        move = action["move"]
+        cruise = speed if action.get("boost") else walk_speed
+        initial = clearance(move, cruise)
+        if initial > radius + 0.25:
+            return
+        t, ux, uy, _, _ = threats[0]
+        zone = obs["zone"]
+        safe_distance = max(zone["radius"] - 1, xy_distance(pos, zone["center"]))
+        best_move, best = None, initial
+        for sign in (-1, 1):
+            option = [-uy * sign, ux * sign]
+            x = pos[0] + displacement(vel[0], option[0] * speed, t)
+            y = pos[1] + displacement(vel[1], option[1] * speed, t)
+            if (self.arena.blocked(x, y, pos[2], height)
+                    or xy_distance([x, y], zone["center"]) > safe_distance):
+                continue
+            margin = clearance(option, speed)
+            if margin > best:
+                best, best_move = margin, option
+        if best_move is not None and best > radius + 0.35 and best - initial > 0.7:
+            action["move"] = best_move
+            action["boost"] = sprint
+
     def act(self, obs):
         me, zone, t = obs["self"], obs["zone"], obs["t"]
         pos, stats = me["pos"], me["stats"]
@@ -633,6 +713,7 @@ class Bot:
             action["aim"] = [self.listen_yaw if t < self.listen_until else scan, 0]
             action["reload"] = any(w and w["kind"] == "gun" and w["ammo"] < w["stats"]["mag"]
                                    for w in me["weapons"])
+        self.avoid_visible_round(obs, action)
         return action
 
 
