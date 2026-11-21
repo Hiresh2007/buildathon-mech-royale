@@ -2,6 +2,25 @@
 
 Outlast is a Python bot for the Builders arena. It routes through campus using terrain, building footprints and its collision radius. It remembers recently seen equipment, captures uncontested supply drops and looks for cover when wounded. It follows announced supply drops within their travel-time window, prioritizes nearby power-cube clusters, and allows health regeneration when wounded and alone. It uses each equipped weapon's trigger rules and checks the static map before engaging actors in the arena's vision memory.
 
+## Visible portion of an arena avatar
+
+The arena tracks mechs when their center or upper body is visible. The 4.17 practice build, `7128d38`, aims at the center and can skip an avatar standing behind a low ledge. This experiment checks a second point at 85% of the avatar's current height when the center is blocked. Cube growth scales both points.
+
+Across 118 encounters from four current public matches, both complete controllers followed the same archived movement with one opposing avatar. Each observed avatar’s encounter starts were separated by at least 38 seconds. The original controller eliminated 21 opponents and the updated controller eliminated 22. Each lost its own avatar three times. The gun, reload clock, visibility memory, torso movement and opponents' later recorded positions determined the outcome. Public broadcasts contain independent teams or house lobbies. The private practice scorer uses a coordinated weakest-first squad.
+
+A subsequently broadcast Top-16 showdown supplied 33 held-out encounters. Both controllers recorded one elimination and survived all 33 windows. The updated controller registered 373 projected hits and 18,251 damage, compared with 356 hits and 17,371 damage for the original. The recorded avatars followed their historical paths.
+
+| Whole-squad proxy, mean per match | Original | Updated |
+| --- | ---: | ---: |
+| Placement points, 20 seeds | 4.15 | 4.25 |
+| Contestant-attributed eliminations | 2.90 | 3.00 |
+| Zone eliminations | 1.25 | 1.25 |
+| NPC eliminations | 0.00 | 0.00 |
+| Seconds survived | 166.58 | 170.14 |
+| Placement points, 12 higher-pressure seeds | 3.33 | 3.33 |
+
+Across six shared seeds the model’s ranking of six earlier official builds had a Spearman correlation of −0.35 with the practice scores. The organizers' private practice scorer measures the official placement result. Run `python3 -m unittest test_visible_avatar` for the open, partially occluded and fully occluded avatar cases.
+
 ## Run the replay check
 
 ```sh

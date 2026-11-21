@@ -317,10 +317,17 @@ class Bot:
             center = (x, y, z + height * 0.5)
             d = math.dist(origin, center)
             cost = d + 0.06 * actor.get("hp", 0) - (18 if self.focus == actor["id"] else 0)
-            options.append((kind != "mech", cost, actor, center, d))
-        for _, _, actor, center, distance in sorted(options, key=lambda o: o[:2]):
+            options.append((kind != "mech", cost, actor, center, d, height))
+        for _, _, actor, center, distance, height in sorted(options, key=lambda o: o[:2]):
             if not self.arena.clear_view(origin, center):
-                continue
+                if actor.get("kind") != "mech":
+                    continue
+                # The arena can expose the upper portion of a mech above a ledge.
+                x, y, z = actor["pos"]
+                center = (x, y, z + 0.85 * height)
+                if not self.arena.clear_view(origin, center):
+                    continue
+                distance = math.dist(origin, center)
             self.focus = actor["id"]
             break
         else:
