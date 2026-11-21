@@ -97,59 +97,6 @@ class Arena:
                    key=lambda cell: math.hypot(cell[0] * self.step - point[0], cell[1] * self.step - point[1]),
                    default=None)
 
-    def walk_segment(self, start, end, scale):
-        """Check a short ground segment against the moving mech's actual footprint."""
-        length = xy_distance(start, end)
-        samples = max(1, math.ceil(length / 2.5))
-        radius, height = 2.5 * scale, 9 * scale
-        terrain = self.terrain
-        previous = start[2]
-        for i in range(1, samples + 1):
-            share = i / samples
-            x = start[0] + (end[0] - start[0]) * share
-            y = start[1] + (end[1] - start[1]) * share
-            col = round((x - terrain["minX"]) / terrain["step"])
-            row = round((y - terrain["minY"]) / terrain["step"])
-            if not (0 <= col < terrain["nx"] and 0 <= row < terrain["ny"]):
-                return False
-            feet = self.heights[row * terrain["nx"] + col] * terrain["scale"]
-            if abs(feet - previous) > max(1.2, length / samples):
-                return False
-            if any(
-                self.blocked(x + dx, y + dy, feet, height)
-                for dx, dy in ((0, 0), (radius, 0), (-radius, 0), (0, radius), (0, -radius))
-            ):
-                return False
-            previous = feet
-        return True
-
-    def terrain_height(self, point):
-        tile = self.terrain
-        x = (point[0] - tile["minX"]) / tile["step"]
-        y = (point[1] - tile["minY"]) / tile["step"]
-        x = min(tile["nx"] - 1.0, max(0.0, x))
-        y = min(tile["ny"] - 1.0, max(0.0, y))
-        col, row = int(x), int(y)
-        right, below = min(col + 1, tile["nx"] - 1), min(row + 1, tile["ny"] - 1)
-        fx, fy = x - col, y - row
-        near = (1.0 - fx) * self.heights[row * tile["nx"] + col] + fx * self.heights[
-            row * tile["nx"] + right
-        ]
-        far = (1.0 - fx) * self.heights[below * tile["nx"] + col] + fx * self.heights[
-            below * tile["nx"] + right
-        ]
-        return ((1.-fy)*near+fy*far)*tile["scale"]
-
-    def same_walking_surface(self, start, end, allowance):
-        if abs(start[2] - end[2]) <= allowance:
-            return True
-        # The four-metre pickup test is local to the actual pickup ring. A
-        # collectible farther up/down a walkable hill is still on this floor.
-        return (
-            abs(start[2] - self.terrain_height(start)) <= 2.0
-            and abs(end[2] - self.terrain_height(end)) <= 2.0
-        )
-
     def clear_view(self, start, end):
         """Check static arena cover for actors still present in the vision memory."""
         steps = math.ceil(math.dist(start, end) / 4)
@@ -225,6 +172,7 @@ class Bot:
         self.listen_until = 0
         self.last_npc_damage = -math.inf
         self.reward_sprint = False
+        self.zone_sprint = False
 
     def shelter(self, obs, enemy, distance):
         """Look for nearby walkable campus cover while waiting for HP regeneration."""
@@ -292,11 +240,14 @@ class Bot:
                     or (name == "pickups" and not free_slot)):
                 del self.supplies[key]
                 continue
-            if (distance > 86 or not self.arena.same_walking_surface(pos, item["pos"], 5)
+            max_range = 130 if name == "pickups" else 86
+            if (distance > max_range or abs(item["pos"][2] - pos[2]) > 5
                     or xy_distance(item["pos"], zone["center"]) > zone["radius"] - 3):
                 continue
             # A crate has to be opened. Favor loose cubes and useful second slots.
-            penalty = {"cubes": 0, "pickups": 3, "crates": 24}[name]
+            # Filling the empty second slot is a one-time reward. A loose item
+            # can be equipped immediately on arrival, unlike a crate.
+            penalty = {"cubes": 0, "pickups": -42, "crates": 24}[name]
             if name == "pickups" and item["kind"] == "laser":
                 penalty -= 9
             if name == "crates" and distance < 8:
@@ -322,110 +273,35 @@ class Bot:
         me, zone = obs["self"], obs["zone"]
         pos = me["pos"]
         for drop in obs["drops"]:
-            if (
-                drop["holder"] == me["id"]
-                and drop["progress"] > 0
-                and xy_distance(pos, drop["pos"]) < drop["radius"] - 0.6
-                and (drop["capture_s"] - drop["progress"] <= 2.5 or me["hp"] < 0.75 * me["max_hp"])
-            ):
+            if (drop["holder"] == me["id"] and drop["progress"] > 0
+                    and xy_distance(pos, drop["pos"]) < drop["radius"] - 0.6
+                    and (drop["capture_s"] - drop["progress"] <= 2.5 or me["hp"] < 0.75 * me["max_hp"])):
                 return drop["pos"], True
 
-        missing_hp = me["max_hp"] - me["hp"]
-        if missing_hp > 0.13 * me["max_hp"] and obs["drops"]:
-            # One completed supply drop refills HP and energy and awards three
-            # cubes. Compare its real clock to the time passive repairs need.
-            stats = me["stats"]
-            repair_time = stats["regen_delay"] + missing_hp / max(1.0, stats["regen_per_s"])
-            best = None
-            for drop in obs["drops"]:
-                if drop["holder"] not in (None, me["id"]):
-                    continue
-                distance = xy_distance(pos, drop["pos"])
-                radius = drop["radius"]
-                if xy_distance(drop["pos"], zone["center"]) > zone["radius"] - radius:
-                    continue
-                travel = max(0.0, distance - radius * 0.65) / stats["walk_speed"]
-                finish = max(travel, drop["lands_in"]) + drop["capture_s"] - drop["progress"]
-                if finish > min(31.0, repair_time + 5.0):
-                    continue
-                if (
-                    xy_distance(drop["pos"], zone["next_center"]) >= zone["next_radius"] - radius
-                    and obs["t"] + finish >= zone["shrink_end"] - 2.0
-                ):
-                    continue
-                # A visible competitor who can enter first can freeze or reset
-                # capture. Use the maximum game speed to avoid assuming priority.
-                competitors = [
-                    max(0.0, xy_distance(actor["pos"], drop["pos"]) - radius) / stats["boost_speed"]
-                    for actor in obs["mechs"]
-                    if actor["kind"] == "mech"
-                ]
-                if competitors and min(competitors) <= finish + 0.5:
-                    continue
-                if best is None or finish < best[0]:
-                    best = finish, drop["pos"], distance < radius * 0.65
-            if best is not None:
-                return best[1], best[2]
-
-        rules = self.config["cubes"]
-        reach = rules["pickup_radius"]
-        count = me["cubes"]
-        threshold = next((n for n in rules["upgrade_thresholds"] if n > count), None)
-        missing = threshold - count if threshold is not None else math.inf
-        if count >= rules["stat_cap"] and missing > 3:
+        cfg = self.config["cubes"]
+        if me["cubes"] >= cfg["stat_cap"] or not obs["cubes"]:
             return None
-        # A cube which completes an offer can change maximum HP, recharge or
-        # repair speed immediately. Count the whole collectible pile before
-        # comparing a detour to the usual nearby-pickup budget.
-        base = 1.7 if count == 0 or me["hp"] < 0.8 * me["max_hp"] else 0.9
-        speed = me["stats"]["walk_speed"]
-        budget = reach + speed * 5.0
-        now = obs["t"]
-        nearby = []
-        for name, item, seen in self.supplies.values():
-            if (
-                name != "cubes"
-                or now - seen > 4.0
-                or not self.arena.same_walking_surface(pos, item["pos"], 4)
-            ):
-                continue
-            distance = xy_distance(pos, item["pos"])
-            if (
-                distance <= budget
-                and xy_distance(item["pos"], zone["center"]) < zone["radius"] - reach
-            ):
-                nearby.append((distance, item))
+        reach = cfg["pickup_radius"]
+        distance_budget = reach + me["stats"]["walk_speed"] * (1.7 if me["cubes"] == 0 or me["hp"] < 0.8 * me["max_hp"] else 0.9)
+        nearby = [(xy_distance(pos, c["pos"]), c) for c in obs["cubes"]
+                  if abs(c["pos"][2] - pos[2]) <= 4
+                  and xy_distance(c["pos"], zone["center"]) < zone["radius"] - reach]
+        nearby = [(d, c) for d, c in nearby if d <= distance_budget]
         if not nearby:
             return None
-        contenders = [actor["pos"] for actor in obs["mechs"] if actor["kind"] == "mech"]
+        # A pickup is automatic within the horizontal ring. Several cubes from
+        # the same reward can therefore be collected in a single visit.
+        def value(entry):
+            distance, cube = entry
+            count = sum(xy_distance(cube["pos"], other["pos"]) <= reach
+                        and abs(cube["pos"][2] - other["pos"][2]) <= 2 for _, other in nearby)
+            credit = min(count, cfg["stat_cap"] - me["cubes"])
+            return max(0, distance - reach) / max(1, credit), distance, cube["id"]
+        # A mass pickup can make many items coincide. Score the nearest candidates
+        # against the full group without a quadratic pass on a busy server tick.
         candidates = sorted(nearby, key=lambda entry: (entry[0], entry[1]["id"]))[:24]
-        best = None
-        for distance, cube in candidates:
-            pile = sum(
-                xy_distance(cube["pos"], other["pos"]) <= reach
-                and abs(cube["pos"][2] - other["pos"][2]) <= 2
-                for _, other in nearby
-            )
-            bonus = 2 if pile >= missing else 0
-            useful = min(pile, max(0, rules["stat_cap"] - count)) + bonus
-            if not useful:
-                continue
-            travel = max(0.0, distance - reach) / speed
-            if travel > base:
-                if travel > min(5.0, base + 0.9 * (useful - 1)):
-                    continue
-                other_distance = min(
-                    (xy_distance(cube["pos"], actor) for actor in contenders), default=math.inf
-                )
-                if (
-                    travel + 0.25
-                    > max(0.0, other_distance - reach) / self.config["mech"]["boost_speed"]
-                ):
-                    continue
-            score = (travel / useful, distance, cube["id"])
-            if best is None or score < best[0]:
-                best = score, cube
-        return (best[1]["pos"], False) if best else None
+        _, cube = min(candidates, key=value)
+        return cube["pos"], False
 
     def engage(self, obs, action):
         me, stats = obs["self"], obs["self"]["stats"]
@@ -487,48 +363,40 @@ class Bot:
             trigger.append(fire)
         action["fire"] = trigger
 
-    def waypoint(self, pos, goal, t, scale=1.0):
-        separation = xy_distance(pos, goal)
-        if separation < 1.5 or (separation < 18 and self.arena.walk_segment(pos, goal, scale)):
+    def waypoint(self, pos, goal, t):
+        if xy_distance(pos, goal) < 18:
             return goal
-        if (
-            self.route_goal is None
-            or t >= self.replan_at
-            or xy_distance(goal, self.route_goal) > 24
-        ):
+        if self.route_goal is None or t >= self.replan_at or xy_distance(goal, self.route_goal) > 24:
             self.route_goal = goal
             self.replan_at = t + 2
             self.waypoints = self.arena.route(pos, goal)
         while self.waypoints and xy_distance(pos, self.waypoints[0]) < 3.5:
             self.waypoints.pop(0)
-        if len(self.waypoints) > 1 and xy_distance(pos, self.waypoints[1]) < 15:
-            if self.arena.walk_segment(pos, self.waypoints[1], scale):
-                self.waypoints.pop(0)
         return self.waypoints[0] if self.waypoints else goal
 
     def steer(self, position, goal, height, radius=2.5):
         dx, dy = goal[0] - position[0], goal[1] - position[1]
-        separation = math.hypot(dx, dy)
-        if separation < 1.5:
+        if math.hypot(dx, dy) < 1.5:
             return [0, 0]
         target = math.atan2(dy, dx)
         best = None
         for turn in (0, 0.45, -0.45, 0.9, -0.9, 1.45, -1.45, 2.1, -2.1, math.pi):
+            # Turn costs are ordered. Obstacles and heading changes can only
+            # add cost, so the remaining candidates cannot improve this choice.
+            if best is not None and abs(turn) >= best[0]:
+                break
             angle = target + self.side * turn
             vx, vy = math.cos(angle), math.sin(angle)
             cost = abs(turn)
             if self.heading is not None:
                 cost += 0.4 * (1 - math.cos(self.heading - angle))
             for distance, weight in ((2, 12), (5, 7), (10, 3), (17, 1)):
-                distance = min(distance, max(5.0, separation + 1.5))
-                x, y = position[0] + vx * distance, position[1] + vy * distance
-                if any(
-                    self.arena.blocked(x + dx, y + dy, position[2], height)
-                    for dx, dy in ((0, 0), (radius, 0), (-radius, 0), (0, radius), (0, -radius))
-                ):
-                    cost += weight
-                if distance >= max(5.0, separation + 1.5):
+                if best is not None and cost >= best[0]:
                     break
+                x, y = position[0] + vx * distance, position[1] + vy * distance
+                if any(self.arena.blocked(x + dx, y + dy, position[2], height)
+                       for dx, dy in ((0, 0), (radius, 0), (-radius, 0), (0, radius), (0, -radius))):
+                    cost += weight
             if best is None or cost < best[0]:
                 best = (cost, angle, [vx, vy])
         self.heading = best[1]
@@ -568,7 +436,11 @@ class Bot:
         elif not urgent and supply and enemy_distance > 65:
             goal, holding = supply[1:]
             approaching_reward = (any(cube["pos"] == goal for cube in obs["cubes"])
-                                  or any(drop["pos"] == goal for drop in obs["drops"]))
+                                  or any(drop["pos"] == goal for drop in obs["drops"])
+                                  or (None in me["weapons"] and any(
+                                      name == "pickups" and item["pos"] == goal
+                                      for name, item, _ in self.supplies.values()
+                                  )))
         elif not urgent and enemy_distance < 100:
             # Legs move independently of the torso. Keep moving across a hunter's
             # view, opening more distance when several opponents arrive.
@@ -579,7 +451,7 @@ class Bot:
             if xy_distance(escape, zone["center"]) < zone["radius"] - 3:
                 goal = escape
 
-        move = [0, 0] if holding else self.steer(pos, self.waypoint(pos, goal, t, stats["radius"] / self.config["mech"]["radius"]), stats["height"], stats["radius"])
+        move = [0, 0] if holding else self.steer(pos, self.waypoint(pos, goal, t), stats["height"], stats["radius"])
         if t >= self.last_check + 1.5:
             if self.last_position and xy_distance(self.last_position, pos) < 2 and xy_distance(pos, goal) > 9:
                 self.climb_until = t + 1.3
@@ -591,7 +463,12 @@ class Bot:
         self.reward_sprint = (approaching_reward and not holding and me["grounded"]
                               and xy_distance(pos, goal) > self.config["cubes"]["pickup_radius"] + 2.5
                               and me["energy"] > threshold * me["max_energy"])
-        action = {"move": move, "boost": self.reward_sprint or climbing or ((urgent or enemy_distance < 60) and me["energy"] > 35),
+        # Ground boosts add horizontal speed. On a timed return to the circle,
+        # spend a full burst, then let the battery recharge through its delay.
+        cutoff = 0.12 if self.zone_sprint else 0.58
+        self.zone_sprint = urgent and me["grounded"] and me["energy"] > cutoff * me["max_energy"]
+        contact_sprint = not urgent and enemy_distance < 60 and me["energy"] > 35
+        action = {"move": move, "boost": self.reward_sprint or climbing or self.zone_sprint or contact_sprint,
                   "jump": climbing and me["grounded"]}
         if take:
             action["take"] = take["id"]
@@ -617,7 +494,10 @@ class Bot:
                                 if s["dist"] != "far" and s["kind"] in ("gun", "laser", "laser_charge", "lightning", "mortar")), None)
             if bearing is not None:
                 self.listen_yaw, self.listen_until = bearing, t + 1
-            scan = (self.heading or 0) + math.sin(t * 0.8) * 1.25
+            if None in me["weapons"] and not opponents:
+                scan = math.remainder(me["aim"][0] + self.side * 0.28, math.tau)
+            else:
+                scan = (self.heading or 0) + math.sin(t * 0.8) * 1.25
             action["aim"] = [self.listen_yaw if t < self.listen_until else scan, 0]
             action["reload"] = any(w and w["kind"] == "gun" and w["ammo"] < w["stats"]["mag"]
                                    for w in me["weapons"])

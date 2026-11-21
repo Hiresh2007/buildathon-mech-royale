@@ -2,6 +2,21 @@
 
 Outlast is a Python bot for the Builders arena. It routes through campus using terrain, building footprints and its collision radius. It remembers recently seen equipment, captures uncontested supply drops and looks for cover when wounded. It follows announced supply drops within their travel-time window, prioritizes nearby power-cube clusters, and allows health regeneration when wounded and alone. It uses each equipped weapon's trigger rules and checks the static map before engaging actors in the arena's vision memory.
 
+## Opening equipment and circle returns
+
+The current policy builds on `7128d38`, which scored 4.17 in the official practice run. While the second slot is empty, the bot searches the full sensor arc when alone, remembers visible floor equipment and spends rechargeable movement energy to reach it. On an urgent return to the circle, it spends energy in grounded bursts. Airborne boost applies upward thrust in this game. The local checks use that distinction when advancing the mech.
+
+| Local measurement | `7128d38` | `5b8d740` | Current |
+| --- | ---: | ---: | ---: |
+| Second slot filled by 22 s | 24/48 | 26/48 | 34/48 |
+| Mean seconds to an equipped second slot, capped at 22 s | 13.51 | 12.95 | 10.16 |
+| Circle detours completed before their seeded deadline | 50/64 | 51/64 | 55/64 |
+| Mean seconds to reenter the circle, capped at 36 s | 14.59 | 13.45 | 12.37 |
+
+The opening comparison uses all 16 spawn poses in each of three public casts, their initial loot and crate locations, recorded rival movements and recorded claims on floor equipment. Each policy receives a 10 Hz observation and moves at 20 Hz using ground and airborne acceleration. The check models vision wedges and map geometry. The original opponents follow their recorded paths. The official 48-game practice run measures placement against a reacting squad. [Organizer mechanics replay](https://play.joinbuilders.org/replays/mechanics-v2-16.jsonl.gz)
+
+The circle comparison uses 64 connected ground routes with a detour on the official map. It advances the same starting positions and energy at 20 Hz with the official jump, jet, recharge and boost values. The official protocol checker answered 300/300 observations on time for this policy, with a 4.8 ms maximum on the development machine.
+
 ## Run the replay check
 
 ```sh
@@ -59,9 +74,9 @@ python3 reward_drill.py --boost --seed 88001 --count 72
 
 `bot.py` is the team's strategy. The standard-library protocol wrapper in `mechfight.py` comes from the official Python kit. The checker, recorded match stream and arena map also come from the organizers. [Official kit](https://www.joinbuilders.org/buildathon/tracks/builders/files/mechfight-kit.tar.gz)
 
-### Full-match placement and recovery
+### Full-match placement and recovery in `5b8d740`
 
-The practice squad shares vision, starts with one active hunter, and adds more as its members are eliminated. The policy values a cube pile by how many useful cubes it contains and whether it unlocks an upgrade. It considers another visible mech's time to reach the pile. A wounded mech compares the remaining clock on an uncontested restorative drop against its passive repair time. Ground collectibles on a hillside stay eligible when both endpoints are near the terrain surface. The four-metre vertical limit still applies at pickup. Short navigation segments check the mech's expanded footprint and the location of the next turn. [Practice scoring rules](https://www.joinbuilders.org/buildathon/tracks/builders)
+The official run for `5b8d740` scored 4.04. The practice squad shares vision, starts with one active hunter, and adds more as its members are eliminated. That revision values a cube pile by how many useful cubes it contains and whether it unlocks an upgrade. It considers another visible mech's time to reach the pile. A wounded mech compares the remaining clock on an uncontested restorative drop against its passive repair time. Ground collectibles on a hillside stay eligible when both endpoints are near the terrain surface. The four-metre vertical limit still applies at pickup. Short navigation segments check the mech's expanded footprint and the location of the next turn. [Practice scoring rules](https://www.joinbuilders.org/buildathon/tracks/builders)
 
 The local placement model runs all six announced circles, fifteen friendly-to-one-another house actors, HP repair, energy, collectible growth, upgrade offers and restorative drops. It approximates the number of active house opponents, their movement and contact damage. The damage rates come from the organizer's public free-for-all replay. The model uses grounded movement and a simplified neutral pickup layout. The official 48-match practice run determines leaderboard placement. [Organizer replay](https://play.joinbuilders.org/replays/mechanics-v2-16.jsonl.gz)
 
@@ -69,10 +84,11 @@ The following commands reproduce the three conditions used for the 36-seed compa
 
 ```sh
 git show 7128d38:bot.py > /tmp/outlast-before-recovery.py
-python3 placement_drill.py --bots /tmp/outlast-before-recovery.py bot.py --seed 201377 --count 12 --pressure 0.85
-python3 placement_drill.py --bots /tmp/outlast-before-recovery.py bot.py --seed 218149 --count 12 --pressure 1.65 --burst
-python3 placement_drill.py --bots /tmp/outlast-before-recovery.py bot.py --seed 227009 --count 12 --pressure 1.2 --decision-step 0.1 --burst
-python3 landed_drop_drill.py --bots /tmp/outlast-before-recovery.py bot.py
+git show 5b8d740:bot.py > /tmp/outlast-recovery.py
+python3 placement_drill.py --bots /tmp/outlast-before-recovery.py /tmp/outlast-recovery.py --seed 201377 --count 12 --pressure 0.85
+python3 placement_drill.py --bots /tmp/outlast-before-recovery.py /tmp/outlast-recovery.py --seed 218149 --count 12 --pressure 1.65 --burst
+python3 placement_drill.py --bots /tmp/outlast-before-recovery.py /tmp/outlast-recovery.py --seed 227009 --count 12 --pressure 1.2 --decision-step 0.1 --burst
+python3 landed_drop_drill.py --bots /tmp/outlast-before-recovery.py /tmp/outlast-recovery.py
 ```
 
 | Measurement | Previous official entry (`7128d38`) | Updated |
