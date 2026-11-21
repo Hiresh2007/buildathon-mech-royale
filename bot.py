@@ -224,6 +224,30 @@ class Bot:
                 break
         return self.cover_goal
 
+    def secondary_upgrades(self, weapons, pickups, enemy_distance):
+        primary, secondary = weapons
+        if not primary or primary["kind"] != "gun" or not secondary:
+            return []
+        kind = secondary["kind"]
+        if kind == "mortar":
+            return [p for p in pickups if p["kind"] in ("lightning", "laser")]
+        if kind == "lightning" and enemy_distance >= secondary["stats"]["range"] + 12:
+            return [p for p in pickups if p["kind"] == "laser"]
+        return []
+
+    def upgrade_waypoint(self, pos, goal, zone, upgrades):
+        direct = xy_distance(pos, goal)
+        options = []
+        for item in upgrades:
+            point = item["pos"]
+            distance = xy_distance(pos, point)
+            extra = distance + xy_distance(point, goal) - direct
+            if (distance < 68 and extra < 33 and abs(pos[2] - point[2]) < 5
+                    and xy_distance(point, zone["center"]) < zone["radius"] - 4):
+                cost = extra + 0.12 * distance - (5 if item["kind"] == "laser" else 0)
+                options.append((cost, point))
+        return min(options, key=lambda option: option[0])[1] if options else None
+
     def loot_goal(self, obs, enemy_distance):
         me, zone, now = obs["self"], obs["zone"], obs["t"]
         pos = me["pos"]
@@ -466,11 +490,13 @@ class Bot:
         enemy = min(opponents, key=lambda a: xy_distance(pos, a["pos"]), default=None)
         enemy_distance = xy_distance(pos, enemy["pos"]) if enemy else math.inf
         near_pickups = [p for p in obs["pickups"] if p["kind"] != "gun"]
-        take = None
-        if None in me["weapons"]:
-            reachable = [p for p in near_pickups if xy_distance(pos, p["pos"]) < self.config["loot"]["pickup_radius"]
-                         and abs(pos[2] - p["pos"][2]) <= 4]
-            take = min(reachable, key=lambda p: xy_distance(pos, p["pos"]), default=None)
+        upgrades = self.secondary_upgrades(me["weapons"], near_pickups, enemy_distance)
+        empty_slot = None in me["weapons"]
+        eligible = near_pickups if empty_slot else upgrades
+        reachable = [p for p in eligible if xy_distance(pos, p["pos"]) < self.config["loot"]["pickup_radius"]
+                     and abs(pos[2] - p["pos"][2]) <= 4]
+        take = min(reachable, key=lambda p: (not empty_slot and p["kind"] != "laser",
+                                            xy_distance(pos, p["pos"])), default=None)
         supply = self.loot_goal(obs, enemy_distance)
         cover = None if urgent else self.shelter(obs, enemy, enemy_distance)
         recovery = None if urgent else self.recovery_goal(obs)
@@ -496,6 +522,13 @@ class Bot:
             if xy_distance(escape, zone["center"]) < zone["radius"] - 3:
                 goal = escape
 
+        if (upgrades and not urgent and not holding and cover is None
+                and enemy_distance > 82 and me["hp"] > 0.58 * me["max_hp"]):
+            waypoint = self.upgrade_waypoint(pos, goal, zone, upgrades)
+            if waypoint is not None:
+                goal = waypoint
+                approaching_reward = True
+
         duel = self.duel_goal(obs, opponents, not urgent and not holding and cover is None)
         if duel is not None:
             goal = duel
@@ -518,6 +551,8 @@ class Bot:
                   "jump": climbing and me["grounded"]}
         if take:
             action["take"] = take["id"]
+            if not empty_slot:
+                action["drop"] = 1
         if obs["offer"]:
             preference = ("plating", "gun_damage", "gun_rate", "armor", "laser_damage", "nanites", "servos", "reactor")
             choices = obs["offer"]["choices"]
