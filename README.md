@@ -2,9 +2,29 @@
 
 Outlast is a Python bot for the Builders arena. It routes through campus using terrain, building footprints and its collision radius. It remembers recently seen equipment, captures uncontested supply drops and looks for cover when wounded. It follows announced supply drops within their travel-time window, prioritizes nearby power-cube clusters, and allows health regeneration when wounded and alone. It uses each equipped weapon's trigger rules and checks the static map before engaging actors in the arena's vision memory.
 
-## Opening equipment and circle returns
+## Movement near other mechs
 
-The current policy builds on `7128d38`, which scored 4.17 in the official practice run. While the second slot is empty, the bot searches the full sensor arc when alone, remembers visible floor equipment and spends rechargeable movement energy to reach it. On an urgent return to the circle, it spends energy in grounded bursts. Airborne boost applies upward thrust in this game. The local checks use that distinction when advancing the mech.
+This revision builds on the official 4.17 entry, `7128d38`. When nearby rivals close in, Outlast compares walkable map cells and uses their separation from up to four observed rivals to choose a destination. It accounts for the next circle while choosing the cell. Supply collection, healing and urgent circle returns retain their priorities from that entry.
+
+Across 48 lives in three public matches, the bottom eight finishers in each match spent a mean 50.9% of their lives within 100 m and unobstructed sight of another mech. The top eight averaged 31.7%. After entering that range, the two groups broke visibility for three consecutive seconds within the following 12 s on 12 of 45 and 64 of 116 occasions, respectively. The measurement samples each second and checks terrain and solid geometry. [Organizer's public mechanics replay](https://play.joinbuilders.org/replays/mechanics-v2-16.jsonl.gz)
+
+```sh
+python3 replay_exposure.py /path/to/match.jsonl.gz
+```
+
+| Local measurement | Official 4.17 entry | Current |
+| --- | ---: | ---: |
+| Contacts cleared within 12 s on 16 held-out replay starts | 10/16 | 15/16 |
+| Mean exposure over those 12 s | 6.33 s | 4.02 s |
+| Mean placement points, eight high-pressure modeled matches with flight | 3.00 | 5.38 |
+| Mean placement points, twelve fresh modeled matches with flight and 10 Hz decisions | 5.67 | 6.17 |
+| Mean placement points, twelve lower-pressure modeled matches with grounded movement | 8.08 | 6.83 |
+
+The contact check used all 16 eligible starts in the opening 53.7 s of a fourth public spectator match, seed 2335036466. Archival rivals follow their recorded paths. The full-match model approximates squad pursuit and starts idle rivals toward the next circle based on their travel time. Only the official 48-game evaluation measures the submitted placement score.
+
+## Opening equipment and circle returns in `fb5d538`
+
+The official run for `fb5d538` scored 3.96. This revision built on `7128d38`, which scored 4.17. While the second slot is empty, the bot searches the full sensor arc when alone, remembers visible floor equipment and spends rechargeable movement energy to reach it. On an urgent return to the circle, it spends energy in grounded bursts. Airborne boost applies upward thrust in this game. The local checks use that distinction when advancing the mech.
 
 | Local measurement | `7128d38` | `5b8d740` | Current |
 | --- | ---: | ---: | ---: |
