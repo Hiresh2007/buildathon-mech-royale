@@ -176,6 +176,8 @@ class Bot:
         self.duel_target = None
         self.duel_until = -math.inf
         self.aim_priority = None
+        self.previous_rivals = {}
+        self.kill_reward = None
 
     def shelter(self, obs, enemy, distance):
         """Look for nearby walkable campus cover while waiting for HP regeneration."""
@@ -326,6 +328,53 @@ class Bot:
         candidates = sorted(nearby, key=lambda entry: (entry[0], entry[1]["id"]))[:24]
         _, cube = min(candidates, key=value)
         return cube["pos"], False
+
+    def confirmed_reward(self, obs, opponents, available):
+        """Remember a defeated opponent's cube pile while it is safe to collect."""
+        me, now = obs["self"], obs["t"]
+        pos = me["pos"]
+        for event in obs["events"]:
+            if event["type"] != "kill":
+                continue
+            last_seen = self.previous_rivals.get(event["target"])
+            if last_seen is None:
+                continue
+            seen_at, point, cubes = last_seen
+            distance = xy_distance(pos, point)
+            if now - seen_at < 2.5 and 75 < distance < 158 and abs(pos[2] - point[2]) < 5:
+                travel_window = min(15, 3 + distance / 10)
+                self.kill_reward = (point, now + travel_window, cubes + 2)
+
+        for actor in opponents:
+            self.previous_rivals[actor["id"]] = (now, actor["pos"][:], actor.get("cubes", 0))
+        if self.kill_reward is None:
+            return None
+
+        point, expires, cubes = self.kill_reward
+        distance = xy_distance(pos, point)
+        if now > expires or me["cubes"] >= self.config["cubes"]["stat_cap"] or distance < 11:
+            self.kill_reward = None
+            return None
+        if (not available or me["hp"] < 0.52 * me["max_hp"]
+                or xy_distance(point, obs["zone"]["center"]) > obs["zone"]["radius"] - 10
+                or abs(pos[2] - point[2]) > 5):
+            return None
+        for actor in opponents:
+            if (xy_distance(pos, actor["pos"]) < 78
+                    or xy_distance(point, actor["pos"]) < min(82, distance + 8)):
+                return None
+        if any(xy_distance(pos, cube["pos"]) < 17 for cube in obs["cubes"]):
+            return None
+
+        cluster = [cube for cube in obs["cubes"] if xy_distance(cube["pos"], point) < 10]
+        if not cluster and distance < 36:
+            self.kill_reward = None
+            return None
+        if cubes < 3 and distance > 122:
+            return None
+        if cluster:
+            return min(cluster, key=lambda cube: xy_distance(pos, cube["pos"]))["pos"]
+        return point
 
     def duel_goal(self, obs, opponents, available):
         """Hold a usable distance from one isolated, inattentive arena avatar."""
@@ -528,6 +577,11 @@ class Bot:
             if waypoint is not None:
                 goal = waypoint
                 approaching_reward = True
+
+        reward = self.confirmed_reward(obs, opponents, not urgent and not holding and cover is None)
+        if reward is not None:
+            goal = reward
+            approaching_reward = True
 
         duel = self.duel_goal(obs, opponents, not urgent and not holding and cover is None)
         if duel is not None:
