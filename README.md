@@ -2,6 +2,23 @@
 
 Outlast is a Python bot for the Builders arena. It routes through campus using terrain, building footprints and its collision radius. It remembers recently seen equipment, captures uncontested supply drops and looks for cover when wounded. It follows announced supply drops within their travel-time window, prioritizes nearby power-cube clusters, and allows health regeneration when wounded and alone. It uses each equipped weapon's trigger rules and checks the static map before engaging actors in the arena's vision memory.
 
+## Next-circle placement experiment
+
+This branch starts from the 4.17 practice entry, `7128d38`. When no supply, recovery or urgent return takes priority, Outlast periodically chooses a position inside the announced next circle. It estimates where recently seen avatars might enter the circle, compares five nearby angles by travel distance and expected crowding, and holds its destination between decisions.
+
+On recorded positions from four public games, the policy chose a different destination at 283 of 1,315 five-second observations, covering 44 participant lives. At those observations, the average distance to the selected destination fell from 134.5 to 51.7 game meters. In the 16 seconds beginning 10 seconds after the decision, recorded opponents spent a mean 5.78 rival-seconds within 85 meters of the new destination, compared with 7.51 at the original destination. The four games each showed a decrease at that distance. The recorded players followed their historical paths.
+
+| Build | Official practice | Modeled placement across 54 seeds |
+| --- | ---: | ---: |
+| `7128d38` | 4.17 | 3.91 |
+| `5b8d740` | 4.04 | 3.56 |
+| `fb5d538` | 3.96 | 3.78 |
+| `1825925` | 4.02 | 2.85 |
+| `2cb1019` | 4.00 | 4.83 |
+| Next-circle experiment | Pending | 4.07 |
+
+Against `7128d38`, the experiment gained 0.72 modeled placement points in the high-pressure setting and lost 0.11 in each of two other settings. The model's rank correlation with the five official scores was −0.10. The organizer scores each build on the private 48-match practice squad.
+
 ## Run the replay check
 
 ```sh

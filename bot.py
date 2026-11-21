@@ -149,6 +149,42 @@ def xy_distance(a, b):
     return math.hypot(a[0] - b[0], a[1] - b[1])
 
 
+def choose_staging_position(pos, center, radius, sightings, now):
+    """Balance travel distance with expected crowding in the announced circle."""
+    dx, dy = pos[0] - center[0], pos[1] - center[1]
+    bearing = math.atan2(dy, dx)
+    target_radius = min(math.hypot(dx, dy), 0.73 * radius)
+
+    def point_at(angle):
+        return [center[0] + target_radius * math.cos(angle),
+                center[1] + target_radius * math.sin(angle)]
+
+    direct = point_at(bearing)
+    if radius < 50 or target_radius < 25:
+        return direct
+
+    # Project avatars outside the next circle to its edge and discount older sightings.
+    arrivals = []
+    for point, seen in sightings.values():
+        age = now - seen
+        if age > 36:
+            continue
+        x, y = point[0] - center[0], point[1] - center[1]
+        fraction = min(1.0, radius * 0.84 / max(1.0, math.hypot(x, y)))
+        arrivals.append((center[0] + x * fraction, center[1] + y * fraction, 1 - age / 36))
+    if not arrivals:
+        return direct
+
+    def cost(destination):
+        crowd = sum(weight * max(0.0, 98 - math.hypot(x - destination[0], y - destination[1]))
+                    for x, y, weight in arrivals)
+        return math.dist(pos[:2], destination) + 0.83 * crowd
+
+    spacing = min(0.48, 52 / max(25, target_radius))
+    candidates = [point_at(bearing + offset * spacing) for offset in (0, 1, -1, 2, -2)]
+    return min(candidates, key=cost)
+
+
 class Bot:
     name = "Outlast"
 
@@ -172,6 +208,10 @@ class Bot:
         self.listen_until = 0
         self.last_npc_damage = -math.inf
         self.reward_sprint = False
+        self.staging_circle = None
+        self.staging_goal = None
+        self.ring_sightings = {}
+        self.reassess_stage = 0
 
     def shelter(self, obs, enemy, distance):
         """Look for nearby walkable campus cover while waiting for HP regeneration."""
@@ -396,14 +436,19 @@ class Bot:
         me, zone, t = obs["self"], obs["zone"], obs["t"]
         pos, stats = me["pos"], me["stats"]
         center, radius = zone["next_center"], zone["next_radius"]
-        ring_angle = math.atan2(pos[1] - center[1], pos[0] - center[0]) + 0.45 * self.side
-        goal = [center[0] + math.cos(ring_angle) * radius * 0.67,
-                center[1] + math.sin(ring_angle) * radius * 0.67]
+        opponents = [a for a in obs["mechs"] if a["kind"] == "mech"]
+        for actor in opponents:
+            self.ring_sightings[actor["id"]] = (actor["pos"][:2], t)
+        circle = (center[0], center[1], radius)
+        if circle != self.staging_circle or t >= self.reassess_stage:
+            self.staging_circle = circle
+            self.staging_goal = choose_staging_position(pos, center, radius, self.ring_sightings, t)
+            self.reassess_stage = t + 14
+        goal = self.staging_goal
         urgent = (not me["in_zone"] or
                   xy_distance(pos, center) - radius > max(0, zone["shrink_end"] - t - 3) * stats["walk_speed"] * 0.7)
         if urgent:
             goal = center
-        opponents = [a for a in obs["mechs"] if a["kind"] == "mech"]
         enemy = min(opponents, key=lambda a: xy_distance(pos, a["pos"]), default=None)
         enemy_distance = xy_distance(pos, enemy["pos"]) if enemy else math.inf
         near_pickups = [p for p in obs["pickups"] if p["kind"] != "gun"]
@@ -437,6 +482,8 @@ class Bot:
             if xy_distance(escape, zone["center"]) < zone["radius"] - 3:
                 goal = escape
 
+        if goal is self.staging_goal and xy_distance(pos, goal) < 4:
+            holding = True
         move = [0, 0] if holding else self.steer(pos, self.waypoint(pos, goal, t), stats["height"], stats["radius"])
         if t >= self.last_check + 1.5:
             if self.last_position and xy_distance(self.last_position, pos) < 2 and xy_distance(pos, goal) > 9:
