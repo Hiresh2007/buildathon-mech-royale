@@ -172,8 +172,9 @@ class Bot:
         self.listen_until = 0
         self.last_npc_damage = -math.inf
         self.reward_sprint = False
-        self.space_goal = None
-        self.space_check_at = -1.0
+        self.last_combat = -math.inf
+        self.wait_for_repair = False
+        self.opening_crate = None
 
     def shelter(self, obs, enemy, distance):
         """Look for nearby walkable campus cover while waiting for HP regeneration."""
@@ -301,6 +302,36 @@ class Bot:
         _, cube = min(candidates, key=value)
         return cube["pos"], False
 
+    def first_upgrade_crate(self, obs, nearest_rival):
+        """Find a crate we can open on the way to our first upgrade."""
+        me, zone = obs["self"], obs["zone"]
+        gun = me["weapons"][0]
+        if (not gun or gun["kind"] != "gun" or me["cubes"] >= 1 or obs["t"] > 85 or not obs["crates"]
+                or nearest_rival < 90 or me["hp"] < 0.72 * me["max_hp"]):
+            return None
+        pos = me["pos"]
+        rivals = [actor["pos"] for actor in obs["mechs"] if actor["kind"] == "mech"]
+        best = None
+        for crate in obs["crates"]:
+            item = crate["pos"]
+            distance = xy_distance(pos, item)
+            if (distance > 40 or abs(pos[2] - item[2]) > 4.0
+                    or xy_distance(item, zone["center"]) > zone["radius"] - 4):
+                continue
+            if any(xy_distance(rival, item) < distance + 8 for rival in rivals):
+                continue
+            walk_distance = max(0.0, distance - self.config["cubes"]["pickup_radius"])
+            travel_time = walk_distance / me["stats"]["walk_speed"]
+            shots = math.ceil(crate["hp"] / max(1.0, gun["stats"]["damage"]))
+            opening_time = shots * gun["stats"]["cooldown"] + max(0.0, gun.get("reload", 0))
+            cost = max(travel_time, opening_time) + 0.15 * travel_time
+            if best is None or cost < best[0]:
+                best = cost, crate
+        if best is None:
+            return None
+        self.opening_crate = best[1]["id"]
+        return best[1]["pos"]
+
     def engage(self, obs, action):
         me, stats = obs["self"], obs["self"]["stats"]
         pos = me["pos"]
@@ -319,7 +350,8 @@ class Bot:
             center = (x, y, z + height * 0.5)
             d = math.dist(origin, center)
             cost = d + 0.06 * actor.get("hp", 0) - (18 if self.focus == actor["id"] else 0)
-            options.append((kind != "mech", cost, actor, center, d))
+            priority = -1 if actor["id"] == self.opening_crate else int(kind != "mech")
+            options.append((priority, cost, actor, center, d))
         for _, _, actor, center, distance in sorted(options, key=lambda o: o[:2]):
             if not self.arena.clear_view(origin, center):
                 continue
@@ -360,41 +392,6 @@ class Bot:
                     fire = aligned and distance <= ws["range"]
             trigger.append(fire)
         action["fire"] = trigger
-
-    def open_space(self, obs, opponents):
-        """Move toward a walkable cell that leaves space from nearby game actors."""
-        me, zone, now = obs["self"], obs["zone"], obs["t"]
-        pos = me["pos"]
-        if (self.space_goal is not None and now < self.space_check_at
-                and xy_distance(pos, self.space_goal) > 7):
-            return self.space_goal
-        neighbors = sorted(opponents, key=lambda actor: xy_distance(pos, actor["pos"]))[:4]
-        nearest = neighbors[0]["pos"]
-        distance = xy_distance(pos, nearest)
-        self.space_check_at = now + 0.65
-        self.space_goal = None
-        away = math.atan2(pos[1] - nearest[1], pos[0] - nearest[0])
-        step = self.arena.step
-        best = None
-        for offset in (0.0, 0.55, -0.55, 1.1, -1.1, 1.65, -1.65, 2.2, -2.2):
-            angle = away + self.side * offset
-            x, y = pos[0] + 36 * math.cos(angle), pos[1] + 36 * math.sin(angle)
-            cell = round(x / step), round(y / step)
-            if cell not in self.arena.ground:
-                continue
-            goal = [cell[0] * step, cell[1] * step]
-            if xy_distance(goal, zone["center"]) > zone["radius"] - 5:
-                continue
-            separation = min(xy_distance(actor["pos"], goal) for actor in neighbors)
-            if separation < distance - 4:
-                continue
-            next_circle = max(0.0, xy_distance(goal, zone["next_center"]) - zone["next_radius"])
-            cost = -separation + next_circle * 0.6 + 2.5 * abs(offset)
-            if best is None or cost < best[0]:
-                best = cost, goal
-        if best:
-            self.space_goal = best[1]
-        return self.space_goal
 
     def waypoint(self, pos, goal, t):
         if xy_distance(pos, goal) < 18:
@@ -454,6 +451,10 @@ class Bot:
         supply = self.loot_goal(obs, enemy_distance)
         cover = None if urgent else self.shelter(obs, enemy, enemy_distance)
         recovery = None if urgent else self.recovery_goal(obs)
+        self.opening_crate = None
+        first_crate = None
+        if not urgent and cover is None and recovery is None:
+            first_crate = self.first_upgrade_crate(obs, enemy_distance)
         holding = False
         approaching_reward = False
         if recovery is not None:
@@ -462,13 +463,22 @@ class Bot:
         elif cover is not None:
             goal = cover
             holding = xy_distance(pos, cover) < 4
+        elif first_crate is not None:
+            goal = first_crate
+            holding = xy_distance(pos, goal) < self.config["cubes"]["pickup_radius"] * 0.8
+            approaching_reward = True
         elif not urgent and supply and enemy_distance > 65:
             goal, holding = supply[1:]
             approaching_reward = (any(cube["pos"] == goal for cube in obs["cubes"])
                                   or any(drop["pos"] == goal for drop in obs["drops"]))
-        elif not urgent and enemy_distance < 105:
-            escape = self.open_space(obs, opponents)
-            if escape is not None:
+        elif not urgent and enemy_distance < 100:
+            # Legs move independently of the torso. Keep moving across a hunter's
+            # view, opening more distance when several opponents arrive.
+            turn = 0.70 if len(opponents) > 1 or me["hp"] < 0.45 * me["max_hp"] else 1.35
+            a = math.atan2(pos[1] - enemy["pos"][1], pos[0] - enemy["pos"][0])
+            escape = [pos[0] + 22 * math.cos(a + turn * self.side),
+                      pos[1] + 22 * math.sin(a + turn * self.side)]
+            if xy_distance(escape, zone["center"]) < zone["radius"] - 3:
                 goal = escape
 
         move = [0, 0] if holding else self.steer(pos, self.waypoint(pos, goal, t), stats["height"], stats["radius"])
@@ -499,7 +509,20 @@ class Bot:
             self.last_npc_damage = t
         repairing = (me["in_zone"] and me["hp"] < 0.82 * me["max_hp"] and not opponents
                      and t - self.last_npc_damage > stats["regen_delay"])
-        if not repairing:
+        if any(event["type"] in ("hit", "damaged") for event in obs["events"]):
+            self.last_combat = t
+        hp_fraction = me["hp"] / me["max_hp"]
+        if hp_fraction < 0.77:
+            self.wait_for_repair = True
+        elif hp_fraction > 0.96:
+            self.wait_for_repair = False
+        nearby_drone = any(actor["kind"] == "npc"
+                           and xy_distance(pos, actor["pos"]) < self.config["npc"]["aggro_range"]
+                           for actor in obs["mechs"])
+        repair_ready = (me["in_zone"] and self.wait_for_repair and not nearby_drone
+                        and enemy_distance > 105
+                        and t - self.last_combat >= max(0.0, stats["regen_delay"] - 1.4))
+        if not repairing and not repair_ready:
             self.engage(obs, action)
         if "aim" not in action:
             bearing = next((e["bearing"] for e in obs["events"]

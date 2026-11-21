@@ -2,9 +2,23 @@
 
 Outlast is a Python bot for the Builders arena. It routes through campus using terrain, building footprints and its collision radius. It remembers recently seen equipment, captures uncontested supply drops and looks for cover when wounded. It follows announced supply drops within their travel-time window, prioritizes nearby power-cube clusters, and allows health regeneration when wounded and alone. It uses each equipped weapon's trigger rules and checks the static map before engaging actors in the arena's vision memory.
 
-## Movement near other mechs
+## Early upgrades and passive repair
 
-This revision builds on the official 4.17 entry, `7128d38`. When nearby rivals close in, Outlast compares walkable map cells and uses their separation from up to four observed rivals to choose a destination. It accounts for the next circle while choosing the cell. Supply collection, healing and urgent circle returns retain their priorities from that entry.
+Starting from the official 4.17 policy at `7128d38`, Outlast goes for its first cube when it can reach and open a nearby crate before a rival gets there. It picks the crate using the time to walk into collection range and finish opening it. When wounded and already close to resuming passive repair, it can pass up an interaction until it recovers. Urgent circle movement and nearby recovery items retain priority.
+
+Across 64 historical spawn positions from four public spectator matches, Outlast earned its first cube inside 25 seconds on 48 starts. The 4.17 policy did so on 37. Its capped mean time to this upgrade fell from 16.0 to 11.8 seconds. The historical players followed their recorded paths.
+
+| Fresh full-match comparison | `7128d38` | Early upgrade and repair |
+| --- | ---: | ---: |
+| Higher-pressure grounded model, 18 seeds | 1.89 | 2.44 |
+| Medium-pressure flight model, 18 seeds | 4.22 | 4.78 |
+| Lower-pressure grounded model, 18 seeds | 5.61 | 7.28 |
+
+The 54 paired simulations averaged 19.3 additional survival seconds. Across 36 calibration seeds, the same referee ranked the four previously scored policies in a different order from the official house squad. Only the organizer's 48 practice matches provide an official score.
+
+## Movement near other mechs in `1825925`
+
+The official run for `1825925` scored 4.02. That revision built on the official 4.17 entry, `7128d38`. When nearby rivals close in, Outlast compares walkable map cells and uses their separation from up to four observed rivals to choose a destination. It accounts for the next circle while choosing the cell. Supply collection, healing and urgent circle returns retain their priorities from that entry.
 
 Across 48 lives in three public matches, the bottom eight finishers in each match spent a mean 50.9% of their lives within 100 m and unobstructed sight of another mech. The top eight averaged 31.7%. After entering that range, the two groups broke visibility for three consecutive seconds within the following 12 s on 12 of 45 and 64 of 116 occasions, respectively. The measurement samples each second and checks terrain and solid geometry. [Organizer's public mechanics replay](https://play.joinbuilders.org/replays/mechanics-v2-16.jsonl.gz)
 
