@@ -178,11 +178,32 @@ class Bot:
         self.aim_priority = None
         self.previous_rivals = {}
         self.kill_reward = None
+        self.last_gun_hits = {}
+        self.volley_source = None
+        self.volley_until = -math.inf
 
-    def shelter(self, obs, enemy, distance):
+    def sustained_gunfire(self, obs, opponents):
+        """Identify a visible rival that recently landed consecutive gun hits."""
+        now = obs["t"]
+        for event in obs["events"]:
+            if event["type"] != "damaged" or event.get("weapon") != "gun":
+                continue
+            source = event.get("by")
+            if source is None:
+                continue
+            previous = self.last_gun_hits.get(source, -math.inf)
+            self.last_gun_hits[source] = now
+            if now - previous <= 1.1:
+                self.volley_source = source
+                self.volley_until = now + 2.2
+        if now >= self.volley_until:
+            return None
+        return next((rival for rival in opponents if rival["id"] == self.volley_source), None)
+
+    def shelter(self, obs, enemy, distance, early=False):
         """Look for nearby walkable campus cover while waiting for HP regeneration."""
         me, zone, now = obs["self"], obs["zone"], obs["t"]
-        if me["hp"] >= 0.65 * me["max_hp"]:
+        if me["hp"] >= (0.90 if early else 0.65) * me["max_hp"]:
             self.cover_goal = None
             return None
         pos, height = me["pos"], me["stats"]["height"]
@@ -197,7 +218,8 @@ class Bot:
         source = enemy["pos"].copy()
         source[2] += self.config["mech"]["muzzle_height"] * (1 + enemy.get("cubes", 0) * self.config["cubes"]["size_per_cube"])
         facing = math.atan2(pos[1] - source[1], pos[0] - source[0])
-        for radius in (0, 15, 30, 48, 68):
+        search_radii = (0, 15, 30) if early else (0, 15, 30, 48, 68)
+        for radius in search_radii:
             # Prefer escape cells farther from this hunter and nearer to the
             # safe side of the ring. Stop on the first usable distance band.
             best = None
@@ -547,7 +569,12 @@ class Bot:
         take = min(reachable, key=lambda p: (not empty_slot and p["kind"] != "laser",
                                             xy_distance(pos, p["pos"])), default=None)
         supply = self.loot_goal(obs, enemy_distance)
-        cover = None if urgent else self.shelter(obs, enemy, enemy_distance)
+        shooter = self.sustained_gunfire(obs, opponents)
+        early_cover = (shooter is not None and 0.65 <= me["hp"] / me["max_hp"] < 0.90
+                       and shooter.get("hp", 1400) > 0.4 * me["hp"])
+        cover_enemy = shooter if early_cover else enemy
+        cover_distance = xy_distance(pos, shooter["pos"]) if early_cover else enemy_distance
+        cover = None if urgent else self.shelter(obs, cover_enemy, cover_distance, early_cover)
         recovery = None if urgent else self.recovery_goal(obs)
         holding = False
         approaching_reward = False
