@@ -4,7 +4,7 @@ Outlast is a Python bot for the Builders arena. It routes through campus using t
 
 ## Official practice result
 
-Builders scored this controller **4.63 placement points** across 48 practice matches and selected it for the final under receipt `BB-1E7E60FE`. It builds on the 4.19 bot’s behavior around isolated opponents. When carrying two weapons, it can swap its secondary for a stronger nearby pickup. Across 22 independent paired local matches, that change raised mean placement points from 4.73 to 5.50. The Dockerfile uses the exact controller and game interface from the [scored commit](https://github.com/Hiresh2007/buildathon-mech-royale/commit/dee82d2cffc63e27cb975cc02c2dee8268233648).
+Builders scored this controller **4.69 placement points** across 48 practice matches and selected it for the final under receipt `BB-6D8DBD22`. It follows confirmed eliminations to collect dropped upgrade cubes. Across 68 paired local games, mean placement moved from 9.99 to 10.25. The previous controller scored 4.63 in official practice. [Scored commit](https://github.com/Hiresh2007/buildathon-mech-royale/commit/6b52eb4e28aa9bdeb7810cab243aed6619bc2fe2)
 
 Run `python3 -m unittest test_duel test_equipment` for the encounter and equipment decision checks. The replay drills below document earlier controller revisions.
 
