@@ -58,3 +58,32 @@ python3 reward_drill.py --boost --seed 88001 --count 72
 ## Credits
 
 `bot.py` is the team's strategy. The standard-library protocol wrapper in `mechfight.py` comes from the official Python kit. The checker, recorded match stream and arena map also come from the organizers. [Official kit](https://www.joinbuilders.org/buildathon/tracks/builders/files/mechfight-kit.tar.gz)
+
+### Full-match placement and recovery
+
+The practice squad shares vision, starts with one active hunter, and adds more as its members are eliminated. The policy values a cube pile by how many useful cubes it contains and whether it unlocks an upgrade. It considers another visible mech's time to reach the pile. A wounded mech compares the remaining clock on an uncontested restorative drop against its passive repair time. Ground collectibles on a hillside stay eligible when both endpoints are near the terrain surface. The four-metre vertical limit still applies at pickup. Short navigation segments check the mech's expanded footprint and the location of the next turn. [Practice scoring rules](https://www.joinbuilders.org/buildathon/tracks/builders)
+
+The local placement model runs all six announced circles, fifteen friendly-to-one-another house actors, HP repair, energy, collectible growth, upgrade offers and restorative drops. It approximates the number of active house opponents, their movement and contact damage. The damage rates come from the organizer's public free-for-all replay. The model uses grounded movement and a simplified neutral pickup layout. The official 48-match practice run determines leaderboard placement. [Organizer replay](https://play.joinbuilders.org/replays/mechanics-v2-16.jsonl.gz)
+
+The following commands reproduce the three conditions used for the 36-seed comparison. Each policy sees the same 12 starts in a condition. The third run uses the official 10 Hz decision cadence. The burst option turns average incoming damage into discrete 45-HP events with matched random draws. The separate landed-drop drill starts with an injured mech, nearby loose cubes, an available supply and a seeded collection deadline.
+
+```sh
+git show 7128d38:bot.py > /tmp/outlast-before-recovery.py
+python3 placement_drill.py --bots /tmp/outlast-before-recovery.py bot.py --seed 201377 --count 12 --pressure 0.85
+python3 placement_drill.py --bots /tmp/outlast-before-recovery.py bot.py --seed 218149 --count 12 --pressure 1.65 --burst
+python3 placement_drill.py --bots /tmp/outlast-before-recovery.py bot.py --seed 227009 --count 12 --pressure 1.2 --decision-step 0.1 --burst
+python3 landed_drop_drill.py --bots /tmp/outlast-before-recovery.py bot.py
+```
+
+| Measurement | Previous official entry (`7128d38`) | Updated |
+| --- | ---: | ---: |
+| Mean modeled placement points, 36 paired seeds | 8.08 | 9.50 |
+| Mean simulated survival | 202.18 s | 223.53 s |
+| Mean zone HP lost | 321.37 | 183.40 |
+| Mean cubes collected over a match | 8.14 | 10.94 |
+| Captures before a seeded deadline, 48 landed-drop starts | 17 | 41 |
+| Cubes collected, established 72-start reward drill | 514 | 540 |
+| Upgrade offers in that drill | 213 | 221 |
+| Announced supplies captured in that drill | 71/72 | 71/72 |
+
+The updated bot placed higher on 17 paired seeds, tied on 13 and placed lower on six. On the official protocol replay it answered 300/300 observations within the 50 ms deadline. The previous entry's official practice score was 4.17.
