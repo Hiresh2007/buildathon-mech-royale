@@ -172,9 +172,10 @@ class Bot:
         self.listen_until = 0
         self.last_npc_damage = -math.inf
         self.reward_sprint = False
-        self.last_combat = -math.inf
-        self.wait_for_repair = False
-        self.opening_crate = None
+        self.recent_attackers = {}
+        self.duel_target = None
+        self.duel_until = -math.inf
+        self.aim_priority = None
 
     def shelter(self, obs, enemy, distance):
         """Look for nearby walkable campus cover while waiting for HP regeneration."""
@@ -222,6 +223,30 @@ class Bot:
                 self.cover_until = now + me["stats"]["regen_delay"] + 2
                 break
         return self.cover_goal
+
+    def secondary_upgrades(self, weapons, pickups, enemy_distance):
+        primary, secondary = weapons
+        if not primary or primary["kind"] != "gun" or not secondary:
+            return []
+        kind = secondary["kind"]
+        if kind == "mortar":
+            return [p for p in pickups if p["kind"] in ("lightning", "laser")]
+        if kind == "lightning" and enemy_distance >= secondary["stats"]["range"] + 12:
+            return [p for p in pickups if p["kind"] == "laser"]
+        return []
+
+    def upgrade_waypoint(self, pos, goal, zone, upgrades):
+        direct = xy_distance(pos, goal)
+        options = []
+        for item in upgrades:
+            point = item["pos"]
+            distance = xy_distance(pos, point)
+            extra = distance + xy_distance(point, goal) - direct
+            if (distance < 68 and extra < 33 and abs(pos[2] - point[2]) < 5
+                    and xy_distance(point, zone["center"]) < zone["radius"] - 4):
+                cost = extra + 0.12 * distance - (5 if item["kind"] == "laser" else 0)
+                options.append((cost, point))
+        return min(options, key=lambda option: option[0])[1] if options else None
 
     def loot_goal(self, obs, enemy_distance):
         me, zone, now = obs["self"], obs["zone"], obs["t"]
@@ -302,35 +327,58 @@ class Bot:
         _, cube = min(candidates, key=value)
         return cube["pos"], False
 
-    def first_upgrade_crate(self, obs, nearest_rival):
-        """Find a crate we can open on the way to our first upgrade."""
-        me, zone = obs["self"], obs["zone"]
-        gun = me["weapons"][0]
-        if (not gun or gun["kind"] != "gun" or me["cubes"] >= 1 or obs["t"] > 85 or not obs["crates"]
-                or nearest_rival < 90 or me["hp"] < 0.72 * me["max_hp"]):
+    def duel_goal(self, obs, opponents, available):
+        """Hold a usable distance from one isolated, inattentive arena avatar."""
+        me, now = obs["self"], obs["t"]
+        self.aim_priority = None
+        for event in obs["events"]:
+            source = event.get("by")
+            if event["type"] == "damaged" and source is not None:
+                self.recent_attackers[source] = now
+
+        if not available or obs["alive"] <= 5 or now >= 185 or me["hp"] <= 0.67 * me["max_hp"]:
             return None
+
         pos = me["pos"]
-        rivals = [actor["pos"] for actor in obs["mechs"] if actor["kind"] == "mech"]
-        best = None
-        for crate in obs["crates"]:
-            item = crate["pos"]
-            distance = xy_distance(pos, item)
-            if (distance > 40 or abs(pos[2] - item[2]) > 4.0
-                    or xy_distance(item, zone["center"]) > zone["radius"] - 4):
+        candidates = []
+        for rival in opponents:
+            point, actor_id = rival["pos"], rival["id"]
+            distance, aim = xy_distance(pos, point), rival.get("aim")
+            if aim is None or not 16 < distance < 150:
                 continue
-            if any(xy_distance(rival, item) < distance + 8 for rival in rivals):
+
+            direction = math.atan2(pos[1] - point[1], pos[0] - point[0])
+            rear = abs(math.remainder(direction - aim[0], math.tau)) > 1.77
+            enemy_hp = rival.get("hp", 1400)
+            finishing = enemy_hp < 0.42 * me["hp"]
+            same_duel = actor_id == self.duel_target and now < self.duel_until
+            if not rear and not (same_duel and finishing):
                 continue
-            walk_distance = max(0.0, distance - self.config["cubes"]["pickup_radius"])
-            travel_time = walk_distance / me["stats"]["walk_speed"]
-            shots = math.ceil(crate["hp"] / max(1.0, gun["stats"]["damage"]))
-            opening_time = shots * gun["stats"]["cooldown"] + max(0.0, gun.get("reload", 0))
-            cost = max(travel_time, opening_time) + 0.15 * travel_time
-            if best is None or cost < best[0]:
-                best = cost, crate
-        if best is None:
+            if not finishing and (me["hp"] <= 0.83 * me["max_hp"]
+                                  or now - self.recent_attackers.get(actor_id, -99) < 2):
+                continue
+
+            others = [actor for actor in opponents if actor["id"] != actor_id]
+            if any(now - self.recent_attackers.get(actor["id"], -99) < 3.5
+                   or xy_distance(pos, actor["pos"]) < 80
+                   or xy_distance(point, actor["pos"]) < 55 for actor in others):
+                continue
+            origin = [pos[0], pos[1], pos[2] + me["stats"]["muzzle_height"]]
+            height = self.config["mech"]["height"] * (1 + self.config["cubes"]["size_per_cube"] * rival.get("cubes", 0))
+            center = [point[0], point[1], point[2] + 0.5 * height]
+            if self.arena.clear_view(origin, center):
+                cost = distance + 0.035 * enemy_hp - (18 if same_duel else 0)
+                candidates.append((cost, rival, distance))
+
+        if not candidates:
             return None
-        self.opening_crate = best[1]["id"]
-        return best[1]["pos"]
+        _, rival, distance = min(candidates, key=lambda candidate: candidate[0])
+        self.aim_priority = self.duel_target = rival["id"]
+        self.duel_until = now + 2
+        point = rival["pos"]
+        stand_off = 32 if any(w and w["kind"] == "lightning" for w in me["weapons"]) else 56
+        goal = [point[i] + (pos[i] - point[i]) / distance * stand_off for i in (0, 1)]
+        return goal if xy_distance(goal, obs["zone"]["center"]) < obs["zone"]["radius"] - 6 else None
 
     def engage(self, obs, action):
         me, stats = obs["self"], obs["self"]["stats"]
@@ -350,8 +398,9 @@ class Bot:
             center = (x, y, z + height * 0.5)
             d = math.dist(origin, center)
             cost = d + 0.06 * actor.get("hp", 0) - (18 if self.focus == actor["id"] else 0)
-            priority = -1 if actor["id"] == self.opening_crate else int(kind != "mech")
-            options.append((priority, cost, actor, center, d))
+            if kind == "mech" and actor["id"] == self.aim_priority:
+                cost -= 65
+            options.append((kind != "mech", cost, actor, center, d))
         for _, _, actor, center, distance in sorted(options, key=lambda o: o[:2]):
             if not self.arena.clear_view(origin, center):
                 continue
@@ -411,8 +460,6 @@ class Bot:
         target = math.atan2(dy, dx)
         best = None
         for turn in (0, 0.45, -0.45, 0.9, -0.9, 1.45, -1.45, 2.1, -2.1, math.pi):
-            if best is not None and abs(turn) >= best[0]:
-                break
             angle = target + self.side * turn
             vx, vy = math.cos(angle), math.sin(angle)
             cost = abs(turn)
@@ -443,18 +490,16 @@ class Bot:
         enemy = min(opponents, key=lambda a: xy_distance(pos, a["pos"]), default=None)
         enemy_distance = xy_distance(pos, enemy["pos"]) if enemy else math.inf
         near_pickups = [p for p in obs["pickups"] if p["kind"] != "gun"]
-        take = None
-        if None in me["weapons"]:
-            reachable = [p for p in near_pickups if xy_distance(pos, p["pos"]) < self.config["loot"]["pickup_radius"]
-                         and abs(pos[2] - p["pos"][2]) <= 4]
-            take = min(reachable, key=lambda p: xy_distance(pos, p["pos"]), default=None)
+        upgrades = self.secondary_upgrades(me["weapons"], near_pickups, enemy_distance)
+        empty_slot = None in me["weapons"]
+        eligible = near_pickups if empty_slot else upgrades
+        reachable = [p for p in eligible if xy_distance(pos, p["pos"]) < self.config["loot"]["pickup_radius"]
+                     and abs(pos[2] - p["pos"][2]) <= 4]
+        take = min(reachable, key=lambda p: (not empty_slot and p["kind"] != "laser",
+                                            xy_distance(pos, p["pos"])), default=None)
         supply = self.loot_goal(obs, enemy_distance)
         cover = None if urgent else self.shelter(obs, enemy, enemy_distance)
         recovery = None if urgent else self.recovery_goal(obs)
-        self.opening_crate = None
-        first_crate = None
-        if not urgent and cover is None and recovery is None:
-            first_crate = self.first_upgrade_crate(obs, enemy_distance)
         holding = False
         approaching_reward = False
         if recovery is not None:
@@ -463,10 +508,6 @@ class Bot:
         elif cover is not None:
             goal = cover
             holding = xy_distance(pos, cover) < 4
-        elif first_crate is not None:
-            goal = first_crate
-            holding = xy_distance(pos, goal) < self.config["cubes"]["pickup_radius"] * 0.8
-            approaching_reward = True
         elif not urgent and supply and enemy_distance > 65:
             goal, holding = supply[1:]
             approaching_reward = (any(cube["pos"] == goal for cube in obs["cubes"])
@@ -480,6 +521,19 @@ class Bot:
                       pos[1] + 22 * math.sin(a + turn * self.side)]
             if xy_distance(escape, zone["center"]) < zone["radius"] - 3:
                 goal = escape
+
+        if (upgrades and not urgent and not holding and cover is None
+                and enemy_distance > 82 and me["hp"] > 0.58 * me["max_hp"]):
+            waypoint = self.upgrade_waypoint(pos, goal, zone, upgrades)
+            if waypoint is not None:
+                goal = waypoint
+                approaching_reward = True
+
+        duel = self.duel_goal(obs, opponents, not urgent and not holding and cover is None)
+        if duel is not None:
+            goal = duel
+            holding = xy_distance(pos, goal) < 3
+            approaching_reward = False
 
         move = [0, 0] if holding else self.steer(pos, self.waypoint(pos, goal, t), stats["height"], stats["radius"])
         if t >= self.last_check + 1.5:
@@ -497,6 +551,8 @@ class Bot:
                   "jump": climbing and me["grounded"]}
         if take:
             action["take"] = take["id"]
+            if not empty_slot:
+                action["drop"] = 1
         if obs["offer"]:
             preference = ("plating", "gun_damage", "gun_rate", "armor", "laser_damage", "nanites", "servos", "reactor")
             choices = obs["offer"]["choices"]
@@ -509,20 +565,7 @@ class Bot:
             self.last_npc_damage = t
         repairing = (me["in_zone"] and me["hp"] < 0.82 * me["max_hp"] and not opponents
                      and t - self.last_npc_damage > stats["regen_delay"])
-        if any(event["type"] in ("hit", "damaged") for event in obs["events"]):
-            self.last_combat = t
-        hp_fraction = me["hp"] / me["max_hp"]
-        if hp_fraction < 0.77:
-            self.wait_for_repair = True
-        elif hp_fraction > 0.96:
-            self.wait_for_repair = False
-        nearby_drone = any(actor["kind"] == "npc"
-                           and xy_distance(pos, actor["pos"]) < self.config["npc"]["aggro_range"]
-                           for actor in obs["mechs"])
-        repair_ready = (me["in_zone"] and self.wait_for_repair and not nearby_drone
-                        and enemy_distance > 105
-                        and t - self.last_combat >= max(0.0, stats["regen_delay"] - 1.4))
-        if not repairing and not repair_ready:
+        if not repairing:
             self.engage(obs, action)
         if "aim" not in action:
             bearing = next((e["bearing"] for e in obs["events"]

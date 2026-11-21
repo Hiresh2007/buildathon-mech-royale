@@ -2,7 +2,13 @@
 
 Outlast is a Python bot for the Builders arena. It routes through campus using terrain, building footprints and its collision radius. It remembers recently seen equipment, captures uncontested supply drops and looks for cover when wounded. It follows announced supply drops within their travel-time window, prioritizes nearby power-cube clusters, and allows health regeneration when wounded and alone. It uses each equipped weapon's trigger rules and checks the static map before engaging actors in the arena's vision memory.
 
-## Early upgrades and passive repair
+## Official practice result
+
+Builders scored this controller **4.63 placement points** across 48 practice matches and selected it for the final under receipt `BB-1E7E60FE`. It builds on the 4.19 bot’s behavior around isolated opponents. When carrying two weapons, it can swap its secondary for a stronger nearby pickup. Across 22 independent paired local matches, that change raised mean placement points from 4.73 to 5.50. The Dockerfile uses the exact controller and game interface from the [scored commit](https://github.com/Hiresh2007/buildathon-mech-royale/commit/dee82d2cffc63e27cb975cc02c2dee8268233648).
+
+Run `python3 -m unittest test_duel test_equipment` for the encounter and equipment decision checks. The replay drills below document earlier controller revisions.
+
+## Early upgrades and passive repair in `2cb1019`
 
 Starting from the official 4.17 policy at `7128d38`, Outlast goes for its first cube when it can reach and open a nearby crate before a rival gets there. It picks the crate using the time to walk into collection range and finish opening it. When wounded and already close to resuming passive repair, it can pass up an interaction until it recovers. Urgent circle movement and nearby recovery items retain priority.
 
@@ -26,7 +32,7 @@ Across 48 lives in three public matches, the bottom eight finishers in each matc
 python3 replay_exposure.py /path/to/match.jsonl.gz
 ```
 
-| Local measurement | Official 4.17 entry | Current |
+| Local measurement | Official 4.17 entry | `1825925` |
 | --- | ---: | ---: |
 | Contacts cleared within 12 s on 16 held-out replay starts | 10/16 | 15/16 |
 | Mean exposure over those 12 s | 6.33 s | 4.02 s |
