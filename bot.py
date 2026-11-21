@@ -279,6 +279,17 @@ class Bot:
             if name == "crates" and distance < 8:
                 continue
             choices.append((distance + penalty, item["pos"], False))
+        if ((not free_slot or not choices) and me["cubes"] < 3
+                and me["hp"] > 0.80 * me["max_hp"] and enemy_distance > 95):
+            for drone in obs["mechs"]:
+                if drone["kind"] != "npc" or drone["id"] != self.focus:
+                    continue
+                point = drone["pos"]
+                distance = xy_distance(pos, point)
+                if (distance <= 80 and abs(pos[2] - point[2]) <= 4
+                        and xy_distance(point, zone["center"]) <= zone["radius"] - 10):
+                    # A drone already under fire drops two cubes at its feet.
+                    choices.append((distance - 7, point, False))
         for drop in obs["drops"]:
             distance = xy_distance(pos, drop["pos"])
             eta = distance / me["stats"]["walk_speed"]
