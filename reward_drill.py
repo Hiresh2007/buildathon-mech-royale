@@ -44,7 +44,7 @@ def position(arena, cell):
     return [cell[0] * arena.step, cell[1] * arena.step, arena.ground[cell]]
 
 
-def run(bot_type, hello, template, arena, seed, far):
+def run(bot_type, hello, template, arena, seed, far, boost=False):
     rng = random.Random(seed)
     center = template["zone"]["next_center"]
     inside = [
@@ -141,6 +141,7 @@ def run(bot_type, hello, template, arena, seed, far):
     tick_hz, decide = cfg["match"]["tick_hz"], cfg["match"]["decide_every"]
     dt = 1 / tick_hz
     duration = 42 if far else 5
+    last_spent = -math.inf
     for tick in range(round(duration * tick_hz)):
         now = tick / tick_hz
         if far:
@@ -148,7 +149,22 @@ def run(bot_type, hello, template, arena, seed, far):
         if tick % decide == 0:
             obs.update(t=start_t + now, tick=tick)
             action = bot.act(obs)
-        walk(arena, me, action, rules, dt)
+        movement = rules
+        if boost:
+            growth = 1 + me["cubes"] * cfg["cubes"]["size_per_cube"]
+            movement = dict(
+                rules, radius=rules["radius"] * growth, height=rules["height"] * growth
+            )
+            me["stats"].update(radius=movement["radius"], height=movement["height"])
+            if action.get("boost") and me["energy"] >= rules["boost_drain"] * dt:
+                movement["walk_speed"] = rules["boost_speed"]
+                me["energy"] -= rules["boost_drain"] * dt
+                last_spent = now
+            elif now - last_spent >= rules["energy_regen_delay"]:
+                me["energy"] = min(
+                    me["max_energy"], me["energy"] + rules["energy_regen"] * dt
+                )
+        walk(arena, me, action, movement, dt)
         if far:
             if (
                 not drop["lands_in"]
@@ -169,8 +185,13 @@ def run(bot_type, hello, template, arena, seed, far):
                 or abs(me["pos"][2] - c["pos"][2]) > 4
             ]
             acquired = len(obs["cubes"]) - len(remaining)
+            cap = cfg["cubes"]["stat_cap"]
+            credit = min(cap, me["cubes"] + acquired) - min(cap, me["cubes"])
+            bonus = credit * rules["hp"] * cfg["cubes"]["hp_per_cube"]
             me["cubes"] += acquired
-            me["hp"] += acquired * rules["hp"] * cfg["cubes"]["hp_per_cube"]
+            me["hp"] += bonus
+            if boost:
+                me["max_hp"] += bonus
             obs["cubes"] = remaining
     return 0 if far else me["cubes"]
 
@@ -181,6 +202,11 @@ def main():
     parser.add_argument("--bot", type=Path, default=Path("bot.py"))
     parser.add_argument("--seed", type=int, default=62001)
     parser.add_argument("--count", type=int, default=64)
+    parser.add_argument(
+        "--boost",
+        action="store_true",
+        help="simulate grounded boost drain and delayed regeneration",
+    )
     args = parser.parse_args()
     with gzip.open(args.kit / "check/stream.jsonl.gz") as inp:
         hello, template = json.loads(next(inp)), json.loads(next(inp))
@@ -188,14 +214,17 @@ def main():
     hello["map"]["dir"] = directory
     arena, bot_type = Arena(directory), load_bot(args.bot, directory)
     cubes = [
-        run(bot_type, hello, template, arena, s, False)
+        run(bot_type, hello, template, arena, s, False, args.boost)
         for s in range(args.seed, args.seed + args.count)
     ]
     drops = [
-        run(bot_type, hello, template, arena, s, True)
+        run(bot_type, hello, template, arena, s, True, args.boost)
         for s in range(args.seed, args.seed + args.count)
     ]
     print(f"Cubes collected in five seconds {sum(cubes)} across {len(cubes)} starts")
+    tiers = hello["config"]["cubes"]["upgrade_thresholds"]
+    offers = sum(number >= threshold for number in cubes for threshold in tiers)
+    print(f"Upgrade offers earned from these cubes {offers}")
     print(
         f"Announced distant supply drops captured within 42 seconds {sum(drops)}/{len(drops)}"
     )

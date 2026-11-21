@@ -171,6 +171,7 @@ class Bot:
         self.listen_yaw = None
         self.listen_until = 0
         self.last_npc_damage = -math.inf
+        self.reward_sprint = False
 
     def shelter(self, obs, enemy, distance):
         """Look for nearby walkable campus cover while waiting for HP regeneration."""
@@ -415,13 +416,17 @@ class Bot:
         cover = None if urgent else self.shelter(obs, enemy, enemy_distance)
         recovery = None if urgent else self.recovery_goal(obs)
         holding = False
+        approaching_reward = False
         if recovery is not None:
             goal, holding = recovery
+            approaching_reward = True
         elif cover is not None:
             goal = cover
             holding = xy_distance(pos, cover) < 4
         elif not urgent and supply and enemy_distance > 65:
             goal, holding = supply[1:]
+            approaching_reward = (any(cube["pos"] == goal for cube in obs["cubes"])
+                                  or any(drop["pos"] == goal for drop in obs["drops"]))
         elif not urgent and enemy_distance < 100:
             # Legs move independently of the torso. Keep moving across a hunter's
             # view, opening more distance when several opponents arrive.
@@ -438,7 +443,13 @@ class Bot:
                 self.climb_until = t + 1.3
             self.last_position, self.last_check = pos, t
         climbing = not holding and t < self.climb_until and me["energy"] > 15
-        action = {"move": move, "boost": climbing or ((urgent or enemy_distance < 60) and me["energy"] > 35),
+        # Use surplus rechargeable energy for collectible trips. Hysteresis
+        # makes the regeneration delay apply once per burst, not once per tick.
+        threshold = 0.53 if self.reward_sprint else 0.83
+        self.reward_sprint = (approaching_reward and not holding and me["grounded"]
+                              and xy_distance(pos, goal) > self.config["cubes"]["pickup_radius"] + 2.5
+                              and me["energy"] > threshold * me["max_energy"])
+        action = {"move": move, "boost": self.reward_sprint or climbing or ((urgent or enemy_distance < 60) and me["energy"] > 35),
                   "jump": climbing and me["grounded"]}
         if take:
             action["take"] = take["id"]
