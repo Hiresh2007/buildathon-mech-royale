@@ -260,14 +260,15 @@ class Bot:
         for name in ("crates", "pickups", "cubes"):
             for item in obs[name]:
                 seen.add(item["id"])
-                if name != "pickups" or (free_slot and item["kind"] != "gun"):
+                if name != "pickups" or item["kind"] != "gun":
                     self.supplies[item["id"]] = (name, item, now)
         choices = []
         for key, (name, item, last_seen) in list(self.supplies.items()):
             distance = xy_distance(pos, item["pos"])
-            if (now - last_seen > 12 or (distance < 9 and key not in seen)
-                    or (name == "pickups" and not free_slot)):
+            if now - last_seen > 12 or (distance < 9 and key not in seen):
                 del self.supplies[key]
+                continue
+            if name == "pickups" and not free_slot:
                 continue
             if (distance > 86 or abs(item["pos"][2] - pos[2]) > 5
                     or xy_distance(item["pos"], zone["center"]) > zone["radius"] - 3):
@@ -651,9 +652,17 @@ class Bot:
             if xy_distance(escape, zone["center"]) < zone["radius"] - 3:
                 goal = escape
 
-        if (upgrades and not urgent and not holding and cover is None
+        if (not empty_slot and me["weapons"][1]["kind"] in ("mortar", "lightning")
+                and not urgent and not holding and cover is None
                 and enemy_distance > 82 and me["hp"] > 0.58 * me["max_hp"]):
             waypoint = self.upgrade_waypoint(pos, goal, zone, upgrades)
+            if waypoint is None:
+                # Pickups leave vision when the torso turns. Their last sighting
+                # can guide a short detour, while take still requires a visible item.
+                remembered = [item for name, item, seen_at in self.supplies.values()
+                              if name == "pickups" and 0 < t - seen_at <= 6]
+                candidates = self.secondary_upgrades(me["weapons"], remembered, enemy_distance)
+                waypoint = self.upgrade_waypoint(pos, goal, zone, candidates)
             if waypoint is not None:
                 goal = waypoint
                 approaching_reward = True
