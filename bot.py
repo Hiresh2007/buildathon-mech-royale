@@ -179,6 +179,62 @@ class Bot:
         self.previous_rivals = {}
         self.kill_reward = None
 
+    def screened_step(self, obs, enemy, source):
+        """Stay behind the same wall when a nearby rival can round the corner."""
+        me, zone, now = obs["self"], obs["zone"], obs["t"]
+        if not me["grounded"] or now - self.recent_attackers.get(enemy["id"], -99) > 3.5:
+            return None
+        if enemy.get("hp", 0) <= 1.3 * me["hp"]:
+            return None
+        pos, height = me["pos"], me["stats"]["height"]
+        point, velocity = enemy["pos"], enemy.get("vel", (0, 0, 0))
+        distance = max(1.0, xy_distance(pos, point))
+        ux, uy = (pos[0] - point[0]) / distance, (pos[1] - point[1]) / distance
+        steps = ((1.2 * velocity[0], 1.2 * velocity[1]), (12 * ux, 12 * uy),
+                 (-9 * uy, 9 * ux), (9 * uy, -9 * ux),
+                 (8 * (ux - uy), 8 * (uy + ux)), (8 * (ux + uy), 8 * (uy - ux)))
+        rival_scale = 1 + self.config["cubes"]["size_per_cube"] * enemy.get("cubes", 0)
+        rival_height = self.config["mech"]["height"] * rival_scale
+        origins = [source]
+        for dx, dy in steps:
+            if not any(self.arena.blocked(point[0] + dx * f, point[1] + dy * f, point[2], rival_height)
+                       for f in (0.33, 0.67, 1.0)):
+                origins.append((point[0] + dx, point[1] + dy, source[2]))
+
+        def exposed(origin, point):
+            return any(self.arena.clear_view(origin, (point[0], point[1], point[2] + height * fraction))
+                       for fraction in (0.85, 0.5))
+
+        if exposed(origins[0], pos):
+            return None
+        threats = [origin for origin in origins[1:] if exposed(origin, pos)]
+        if not threats:
+            return None
+        checks = threats + [origin for origin in origins if origin not in threats]
+        alternatives = []
+        for distance in (8, 15, 22):
+            for index in range(12):
+                angle = index * math.tau / 12
+                dx, dy = distance * math.cos(angle), distance * math.sin(angle)
+                x, y = pos[0] + dx, pos[1] + dy
+                if xy_distance((x, y), zone["center"]) >= zone["radius"] - 4:
+                    continue
+                cell = self.arena.nearest_cell((x, y))
+                if cell is None:
+                    continue
+                ground = self.arena.ground[cell]
+                if abs(ground - pos[2]) > 1.3 or any(
+                        self.arena.blocked(pos[0] + dx * f, pos[1] + dy * f, pos[2], height)
+                        for f in (0.25, 0.5, 0.75, 1.0)):
+                    continue
+                point = (x, y, ground)
+                cost = distance - 0.3 * (xy_distance(point, source) - xy_distance(pos, source))
+                alternatives.append((cost, point))
+        for _, point in sorted(alternatives, key=lambda entry: entry[0]):
+            if not any(exposed(origin, point) for origin in checks):
+                return [point[0], point[1]]
+        return None
+
     def shelter(self, obs, enemy, distance):
         """Look for nearby walkable campus cover while waiting for HP regeneration."""
         me, zone, now = obs["self"], obs["zone"], obs["t"]
@@ -222,6 +278,12 @@ class Bot:
                     best = (cost, [x, y])
             if best:
                 self.cover_goal = best[1]
+                if not radius:
+                    deeper = self.screened_step(obs, enemy, source)
+                    if deeper:
+                        self.cover_goal = deeper
+                        travel = xy_distance(pos, deeper) / me["stats"]["walk_speed"]
+                        self.cover_check_at = now + max(0.65, min(1.5, travel))
                 self.cover_until = now + me["stats"]["regen_delay"] + 2
                 break
         return self.cover_goal
