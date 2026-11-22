@@ -360,16 +360,28 @@ class Bot:
             distance = xy_distance(pos, point)
             if now - seen_at < 2.5 and 75 < distance < 158 and abs(pos[2] - point[2]) < 5:
                 travel_window = min(15, 3 + distance / 10)
-                self.kill_reward = (point, now + travel_window, cubes + 2)
+                self.kill_reward = (point, now + travel_window, cubes + 2, event["target"])
 
         for actor in opponents:
             self.previous_rivals[actor["id"]] = (now, actor["pos"][:], actor.get("cubes", 0))
         if self.kill_reward is None:
             return None
 
-        point, expires, cubes = self.kill_reward
+        point, expires, cubes, defeated = self.kill_reward
         distance = xy_distance(pos, point)
-        if now > expires or me["cubes"] >= self.config["cubes"]["stat_cap"] or distance < 11:
+        cube_rules = self.config["cubes"]
+        if me["cubes"] >= cube_rules["stat_cap"]:
+            levels = cube_rules["upgrade_thresholds"]
+            if not any(me["cubes"] < level <= me["cubes"] + cubes for level in levels):
+                self.kill_reward = None
+                return None
+            delay = me["stats"]["regen_delay"]
+            if (any(source != defeated and now - when < delay
+                    for source, when in self.recent_attackers.items())
+                    or any(event["type"] == "damaged" and event.get("by") not in (None, defeated)
+                           for event in obs["events"])):
+                return None
+        if now > expires or distance < 11:
             self.kill_reward = None
             return None
         if (not available or me["hp"] < 0.52 * me["max_hp"]
