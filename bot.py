@@ -254,6 +254,8 @@ class Bot:
         me, zone, now = obs["self"], obs["zone"], obs["t"]
         pos = me["pos"]
         free_slot = None in me["weapons"]
+        self.opening_gear = set()
+        opening = (free_slot and now < 55 and me["hp"] > 0.78 * me["max_hp"] and enemy_distance > 82)
         # Crates and cubes disappear from obs as soon as the torso turns away.
         # Remember them only until we have had time to get there and inspect them.
         seen = set()
@@ -263,19 +265,27 @@ class Bot:
                 if name != "pickups" or (free_slot and item["kind"] != "gun"):
                     self.supplies[item["id"]] = (name, item, now)
         choices = []
+        usual = []
         for key, (name, item, last_seen) in list(self.supplies.items()):
             distance = xy_distance(pos, item["pos"])
             if (now - last_seen > 12 or (distance < 9 and key not in seen)
                     or (name == "pickups" and not free_slot)):
                 del self.supplies[key]
                 continue
-            if (distance > 86 or abs(item["pos"][2] - pos[2]) > 5
+            first_equipment = opening and name == "pickups" and item["kind"] in ("laser", "lightning")
+            reach = 140 if first_equipment else 86
+            if (distance > reach or abs(item["pos"][2] - pos[2]) > 5
                     or xy_distance(item["pos"], zone["center"]) > zone["radius"] - 3):
                 continue
             # A crate has to be opened. Favor loose cubes and useful second slots.
             penalty = {"cubes": 0, "pickups": 3, "crates": 24}[name]
             if name == "pickups" and item["kind"] == "laser":
                 penalty -= 9
+            if opening and distance <= 86 and (name != "crates" or distance >= 8):
+                usual.append((distance + penalty, item["pos"], False))
+            if first_equipment:
+                self.opening_gear.add(tuple(item["pos"]))
+                penalty -= 32
             if name == "crates" and distance < 8:
                 continue
             choices.append((distance + penalty, item["pos"], False))
@@ -290,9 +300,16 @@ class Bot:
                 continue
             reward = 105 if me["hp"] < 0.85 * me["max_hp"] else 70
             hold = distance < drop["radius"] * 0.65
-            choices.append((distance + max(0, drop["lands_in"] - eta) * 3 - reward,
-                            drop["pos"], hold))
-        return min(choices, key=lambda entry: entry[0]) if choices else None
+            option = (distance + max(0, drop["lands_in"] - eta) * 3 - reward, drop["pos"], hold)
+            choices.append(option)
+            if opening:
+                usual.append(option)
+        selected = min(choices, key=lambda entry: entry[0]) if choices else None
+        regular = min(usual, key=lambda entry: entry[0]) if usual else None
+        # Reserve the opening sprint for a pickup that changes the route.
+        if selected and regular and selected[1] == regular[1]:
+            self.opening_gear.discard(tuple(selected[1]))
+        return selected
 
     def recovery_goal(self, obs):
         """Collect a near-term health reward using the arena's actual capture clocks."""
@@ -640,7 +657,8 @@ class Bot:
         elif not urgent and supply and enemy_distance > 65:
             goal, holding = supply[1:]
             approaching_reward = (any(cube["pos"] == goal for cube in obs["cubes"])
-                                  or any(drop["pos"] == goal for drop in obs["drops"]))
+                                  or any(drop["pos"] == goal for drop in obs["drops"])
+                                  or tuple(goal) in self.opening_gear)
         elif not urgent and enemy_distance < 100:
             # Legs move independently of the torso. Keep moving across a hunter's
             # view, opening more distance when several opponents arrive.
